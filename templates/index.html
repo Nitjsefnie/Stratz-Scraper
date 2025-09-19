@@ -38,6 +38,12 @@
           <button id="progress" type="button" class="secondary">Refresh progress</button>
           <button id="best" type="button" class="secondary">Show best heroes</button>
         </div>
+        <div class="field-row">
+          <label>
+            <span class="label">Max requests this run</span>
+            <input id="maxRequests" type="number" min="1" placeholder="Unlimited">
+          </label>
+        </div>
         <div class="status-grid">
           <div>
             <span class="label">Progress</span>
@@ -47,9 +53,14 @@
             <span class="label">Backoff</span>
             <span id="backoffText" class="value">—</span>
           </div>
+          <div>
+            <span class="label">Requests remaining</span>
+            <span id="requestsRemaining" class="value">—</span>
+          </div>
         </div>
       </section>
 
+      {% if show_seed %}
       <section class="card">
         <h2>Seed Player IDs</h2>
         <p>Optionally enqueue a range of player IDs to process.</p>
@@ -65,6 +76,7 @@
           <button id="seedBtn" type="button" class="secondary">Seed IDs</button>
         </div>
       </section>
+      {% endif %}
 
       <section class="card">
         <h2>Activity Log</h2>
