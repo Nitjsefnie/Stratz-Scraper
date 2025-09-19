@@ -50,6 +50,17 @@ def ensure_schema() -> None:
     )
     """
     )
+    cur.execute(
+        """
+    CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value INTEGER NOT NULL
+    )
+    """
+    )
+    cur.execute(
+        "INSERT OR IGNORE INTO meta (key, value) VALUES ('task_counter', 0)"
+    )
     conn.commit()
     conn.close()
 

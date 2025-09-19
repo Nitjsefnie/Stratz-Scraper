@@ -9,6 +9,8 @@ app = Flask(__name__, static_folder="static", template_folder="templates")
 ensure_schema()
 release_incomplete_assignments()
 
+RERUN_INTERVAL = 10
+
 
 def is_local_request() -> bool:
     """Return True if the active request originates from localhost."""
@@ -43,23 +45,66 @@ def index():
 def task():
     """Assign the next available player id to the requesting worker."""
     conn = db()
-    cur = conn.execute(
-        """
-        UPDATE players
-        SET assigned_to='browser', assigned_at=strftime('%s','now')
-        WHERE id = (
+    conn.execute("BEGIN IMMEDIATE")
+
+    counter_row = conn.execute(
+        "UPDATE meta SET value = value + 1 WHERE key='task_counter' RETURNING value"
+    ).fetchone()
+    if counter_row is None:
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('task_counter', 1)"
+        )
+        counter = 1
+    else:
+        counter = int(counter_row["value"])
+
+    candidate_id = None
+    if RERUN_INTERVAL and counter % RERUN_INTERVAL == 0:
+        rerun_row = conn.execute(
+            """
+            SELECT id
+            FROM players
+            WHERE done=1
+            ORDER BY assigned_at ASC, id ASC
+            LIMIT 1
+            """
+        ).fetchone()
+        if rerun_row:
+            candidate_id = rerun_row["id"]
+            conn.execute(
+                "DELETE FROM hero_stats WHERE player_id=?",
+                (candidate_id,),
+            )
+
+    if candidate_id is None:
+        row = conn.execute(
+            """
             SELECT id
             FROM players
             WHERE done=0 AND assigned_to IS NULL
+            ORDER BY id
             LIMIT 1
-        )
-        RETURNING id
-        """
-    )
-    row = cur.fetchone()
+            """
+        ).fetchone()
+        candidate_id = row["id"] if row else None
+
+    assigned_row = None
+    if candidate_id is not None:
+        assigned_row = conn.execute(
+            """
+            UPDATE players
+            SET done=0,
+                assigned_to='browser',
+                assigned_at=strftime('%s','now')
+            WHERE id=? AND assigned_to IS NULL
+            RETURNING id
+            """,
+            (candidate_id,),
+        ).fetchone()
+
     conn.commit()
     conn.close()
-    return jsonify({"task": row["id"] if row else None})
+    return jsonify({"task": assigned_row["id"] if assigned_row else None})
 
 
 @app.post("/task/reset")
