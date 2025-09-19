@@ -1,4 +1,5 @@
 *
 !**/*.py
-!static
-!templates
+!README.md
+!static/**
+!templates/**
