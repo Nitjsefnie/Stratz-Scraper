@@ -268,11 +268,15 @@ async function getTask() {
   return payload.task;
 }
 
-async function resetTask(playerId) {
+async function resetTask(task) {
+  if (!task) return;
   const response = await fetch("/task/reset", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ player_id: playerId }),
+    body: JSON.stringify({
+      steamAccountId: task.steamAccountId,
+      type: task.type,
+    }),
   });
   if (!response.ok) {
     throw new Error(`Reset failed with status ${response.status}`);
@@ -285,13 +289,12 @@ async function fetchPlayerHeroes(playerId, token) {
   }
 
   const query = `
-    query HeroPerf($id: Long!) {
-      player(steamAccountId: $id) {
-        steamAccountId
-        heroesPerformance(request: { take: 999999, gameModeIds: [1, 22] }, take: 200) {
+    query PlayerHeroes($steamAccountId: Long!) {
+      player(steamAccountId: $steamAccountId) {
+        heroes {
           heroId
-          matchCount
-          winCount
+          games
+          wins
         }
       }
     }
@@ -302,27 +305,108 @@ async function fetchPlayerHeroes(playerId, token) {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ query, variables: { id: playerId } }),
+    body: JSON.stringify({ query, variables: { steamAccountId: playerId } }),
   });
   if (!response.ok) {
     throw new Error(`Stratz API returned ${response.status}`);
   }
   const data = await response.json();
-  if (!data?.data?.player) {
+  const heroes = data?.data?.player?.heroes;
+  if (!Array.isArray(heroes)) {
     return [];
   }
-  return data.data.player.heroesPerformance.map((hero) => ({
-    hero_id: hero.heroId,
-    games: hero.matchCount,
-    wins: hero.winCount,
-  }));
+  return heroes
+    .filter((hero) => Number.isFinite(hero?.heroId))
+    .map((hero) => ({
+      heroId: hero.heroId,
+      games: hero?.games ?? 0,
+      wins: hero?.wins ?? 0,
+    }));
 }
 
-async function submitBulk(playerId, heroes) {
+async function discoverMatches(playerId, token, { take = 100, skip = 0 } = {}) {
+  if (!token) {
+    throw new Error("Stratz token is not set");
+  }
+
+  const query = `
+    query PlayerMatches($steamAccountId: Long!, $take: Int!, $skip: Int!) {
+      player(steamAccountId: $steamAccountId) {
+        matches(request: { take: $take, skip: $skip }) {
+          id
+          players {
+            steamAccountId
+          }
+        }
+      }
+    }
+  `;
+
+  const response = await fetch("https://api.stratz.com/graphql", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ query, variables: { steamAccountId: playerId, take, skip } }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Stratz API returned ${response.status}`);
+  }
+
+  const data = await response.json();
+  const matches = data?.data?.player?.matches;
+  if (!Array.isArray(matches)) {
+    return [];
+  }
+
+  const discovered = new Set();
+  matches.forEach((match) => {
+    if (!Array.isArray(match?.players)) {
+      return;
+    }
+    match.players.forEach((participant) => {
+      const rawId = participant?.steamAccountId;
+      const id =
+        typeof rawId === "number"
+          ? rawId
+          : typeof rawId === "string"
+            ? Number.parseInt(rawId, 10)
+            : null;
+      if (Number.isFinite(id) && id !== playerId) {
+        discovered.add(id);
+      }
+    });
+  });
+
+  return Array.from(discovered);
+}
+
+async function submitHeroStats(playerId, heroes) {
   const response = await fetch("/submit", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ player_id: playerId, heroes }),
+    body: JSON.stringify({
+      type: "fetch_hero_stats",
+      steamAccountId: playerId,
+      heroes,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`Submit failed with status ${response.status}`);
+  }
+}
+
+async function submitDiscovery(playerId, discovered) {
+  const response = await fetch("/submit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "discover_matches",
+      steamAccountId: playerId,
+      discovered,
+    }),
   });
   if (!response.ok) {
     throw new Error(`Submit failed with status ${response.status}`);
@@ -335,7 +419,9 @@ async function refreshProgress() {
     throw new Error(`Progress failed with status ${response.status}`);
   }
   const payload = await response.json();
-  elements.progressText.textContent = `${payload.done} / ${payload.total}`;
+  const heroLine = `${payload.hero_done} / ${payload.players_total}`;
+  const discoverLine = `${payload.discover_done} / ${payload.players_total}`;
+  elements.progressText.textContent = `Hero: ${heroLine} • Discover: ${discoverLine}`;
   return payload;
 }
 
@@ -413,22 +499,41 @@ async function workLoopForToken(token) {
   }
 
   while (!token.stopRequested) {
-    let taskId = null;
+    let task = null;
     try {
-      taskId = await getTask();
-      if (!taskId) {
+      task = await getTask();
+      if (!task) {
         log(`Token #${label}: no tasks left. Stopping worker.`);
         break;
       }
       if (token.stopRequested) {
-        await resetTask(taskId).catch(() => {});
+        await resetTask(task).catch(() => {});
         break;
       }
-      log(`Token #${label}: fetched task ${taskId}.`);
-      const heroes = await fetchPlayerHeroes(taskId, token.activeToken);
-      log(`Token #${label}: fetched ${heroes.length} heroes for ${taskId}.`);
-      await submitBulk(taskId, heroes);
-      log(`Token #${label}: submitted ${heroes.length} heroes for ${taskId}.`);
+      const taskId = task.steamAccountId;
+      if (task.type === "fetch_hero_stats") {
+        log(`Token #${label}: hero stats task for ${taskId}.`);
+        const heroes = await fetchPlayerHeroes(taskId, token.activeToken);
+        log(`Token #${label}: fetched ${heroes.length} heroes for ${taskId}.`);
+        await submitHeroStats(taskId, heroes);
+        log(`Token #${label}: submitted ${heroes.length} heroes for ${taskId}.`);
+      } else if (task.type === "discover_matches") {
+        log(
+          `Token #${label}: discovery task for ${taskId} (depth ${task.depth ?? 0}).`,
+        );
+        const discovered = await discoverMatches(taskId, token.activeToken);
+        log(
+          `Token #${label}: discovered ${discovered.length} accounts from ${taskId}.`,
+        );
+        await submitDiscovery(taskId, discovered);
+        log(`Token #${label}: submitted discovery results for ${taskId}.`);
+      } else {
+        log(
+          `Token #${label}: received unknown task type ${task.type}. Resetting task ${taskId}.`,
+        );
+        await resetTask(task).catch(() => {});
+        break;
+      }
       await refreshProgress();
       if (token.requestsRemaining !== null) {
         token.requestsRemaining = Math.max(0, token.requestsRemaining - 1);
@@ -443,16 +548,19 @@ async function workLoopForToken(token) {
       await delay(500);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      log(`Token #${label}: error${taskId ? ` for ${taskId}` : ""}: ${message}`);
+      const activeId = task?.steamAccountId;
+      log(`Token #${label}: error${activeId ? ` for ${activeId}` : ""}: ${message}`);
       showErrorStatus("Retrying");
-      if (taskId !== null) {
+      if (task) {
         try {
-          await resetTask(taskId);
-          log(`Token #${label}: reset task ${taskId}.`);
+          await resetTask(task);
+          log(`Token #${label}: reset task ${task.steamAccountId}.`);
         } catch (resetError) {
           const resetMessage =
             resetError instanceof Error ? resetError.message : String(resetError);
-          log(`Token #${label}: failed to reset ${taskId}: ${resetMessage}`);
+          log(
+            `Token #${label}: failed to reset ${task?.steamAccountId ?? "?"}: ${resetMessage}`,
+          );
         }
       }
       await delay(token.backoff);
