@@ -1,5 +1,14 @@
 """Hero metadata for Stratz scraper."""
 
+from typing import Dict, Tuple
+
+
+def hero_slug(name: str) -> str:
+    """Return the canonical slug for a hero name."""
+
+    return name.lower().replace(" ", "_")
+
+
 HEROES_JSON = [
     {"id": 1, "localized_name": "Anti-Mage"},
     {"id": 2, "localized_name": "Axe"},
@@ -130,5 +139,9 @@ HEROES_JSON = [
 ]
 
 HEROES = {hero["id"]: hero["localized_name"] for hero in HEROES_JSON}
+HERO_SLUGS: Dict[str, Tuple[int, str]] = {
+    hero_slug(hero["localized_name"]): (hero["id"], hero["localized_name"])
+    for hero in HEROES_JSON
+}
 
-__all__ = ["HEROES", "HEROES_JSON"]
+__all__ = ["HEROES", "HEROES_JSON", "HERO_SLUGS", "hero_slug"]

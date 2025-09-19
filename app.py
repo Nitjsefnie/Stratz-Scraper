@@ -2,10 +2,10 @@
 """Flask application providing the Stratz distributed scraping UI and API."""
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, abort, jsonify, render_template, request
 
 from database import DB_PATH, db, ensure_schema, release_incomplete_assignments
-from heroes import HEROES
+from heroes import HEROES, HERO_SLUGS
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 
@@ -382,6 +382,46 @@ def seed():
     conn.commit()
     conn.close()
     return jsonify({"seeded": [start, end]})
+
+
+@app.get("/leaderboards/<hero_slug>")
+def hero_leaderboard(hero_slug: str):
+    """Display the leaderboard for the requested hero."""
+
+    slug = hero_slug.strip().replace(" ", "_").lower()
+    hero_entry = HERO_SLUGS.get(slug)
+    if not hero_entry:
+        abort(404)
+
+    hero_id, hero_name = hero_entry
+    conn = db()
+    rows = conn.execute(
+        """
+        SELECT steamAccountId, matches, wins
+        FROM hero_stats
+        WHERE heroId=?
+        ORDER BY matches DESC, wins DESC, steamAccountId ASC
+        LIMIT 100
+        """,
+        (hero_id,),
+    ).fetchall()
+    conn.close()
+
+    players = [
+        {
+            "steamAccountId": row["steamAccountId"],
+            "matches": row["matches"],
+            "wins": row["wins"],
+        }
+        for row in rows
+    ]
+
+    return render_template(
+        "leaderboard.html",
+        hero_name=hero_name,
+        hero_slug=slug,
+        players=players,
+    )
 
 
 @app.get("/best")
