@@ -582,8 +582,17 @@ async function workLoopForToken(token) {
     try {
       task = await getTask();
       if (!task) {
-        log(`Token #${label}: no tasks left. Stopping worker.`);
-        break;
+        const wait = 60_000;
+        log(
+          `Token #${label}: no tasks available. Waiting 60 seconds before retrying.`,
+        );
+        token.backoff = wait;
+        updateBackoffDisplay();
+        await delay(wait);
+        if (token.stopRequested) {
+          break;
+        }
+        continue;
       }
       if (token.stopRequested) {
         await resetTask(task).catch(() => {});
@@ -642,9 +651,19 @@ async function workLoopForToken(token) {
           );
         }
       }
-      await delay(token.backoff);
-      token.backoff = Math.min(Math.ceil(token.backoff * 1.1), state.maxBackoff);
-      updateBackoffDisplay();
+      if (!task) {
+        const wait = 60_000;
+        token.backoff = wait;
+        updateBackoffDisplay();
+        await delay(wait);
+      } else {
+        await delay(token.backoff);
+        token.backoff = Math.min(
+          Math.ceil(token.backoff * 1.1),
+          state.maxBackoff,
+        );
+        updateBackoffDisplay();
+      }
       if (!token.stopRequested) {
         refreshStatusChip();
       }
