@@ -291,7 +291,7 @@ async function fetchPlayerHeroes(playerId, token) {
   const query = `
     query HeroPerf($id: Long!) {
       player(steamAccountId: $id) {
-        heroesPerformance(request: { take: 999999, gameModeIds: [1, 22] }) {
+        heroesPerformance(request: { take: 999999, gameModeIds: [1, 22] }, take: 200) {
           heroId
           matchCount
           winCount
