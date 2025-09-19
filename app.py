@@ -214,10 +214,6 @@ def reset_task():
     cur = conn.cursor()
     if task_type == "fetch_hero_stats":
         cur.execute(
-            "DELETE FROM hero_stats WHERE steamAccountId = ?",
-            (steam_account_id,),
-        )
-        cur.execute(
             """
             UPDATE players
             SET hero_done=0,
