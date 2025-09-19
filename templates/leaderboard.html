@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>{{ hero_name }} Leaderboard - Dota Distributed Scraper</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+  </head>
+  <body>
+    <main class="container">
+      <header class="page-header">
+        <div>
+          <h1>{{ hero_name }} Leaderboard</h1>
+          <p class="lead">Top 100 players by matches played on {{ hero_name }}.</p>
+        </div>
+        <a href="{{ url_for('index') }}">Back to dashboard</a>
+      </header>
+
+      <section class="card">
+        <h2>Players</h2>
+        {% if players %}
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Rank</th>
+                <th scope="col">Steam Account ID</th>
+                <th scope="col">Matches</th>
+                <th scope="col">Wins</th>
+                <th scope="col">Win Rate</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for player in players %}
+              {% set win_rate = (player.matches and (player.wins / player.matches * 100)) or 0 %}
+              <tr>
+                <td>{{ loop.index }}</td>
+                <td>{{ player.steamAccountId }}</td>
+                <td>{{ player.matches }}</td>
+                <td>{{ player.wins }}</td>
+                <td>{{ '%.1f' % win_rate }}%</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="muted">No match data has been collected for {{ hero_name }} yet.</p>
+        {% endif %}
+      </section>
+    </main>
+  </body>
+</html>
