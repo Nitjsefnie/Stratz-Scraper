@@ -20,14 +20,12 @@
       </header>
 
       <section class="card">
-        <h2>Stratz Token</h2>
+        <h2>Stratz Tokens</h2>
         <p>
-          Paste a valid Stratz API token. It is stored only in your browser as a cookie.
+          Add one or more Stratz API tokens. They are stored only in your browser as a cookie.
         </p>
-        <div class="field-row">
-          <input id="token" type="text" placeholder="Paste Stratz API token" autocomplete="off">
-          <button id="saveToken" type="button" class="secondary">Save token</button>
-        </div>
+        <div id="tokenList" class="token-list" aria-live="polite"></div>
+        <button id="addToken" type="button" class="secondary">Add token</button>
       </section>
 
       <section class="card control-panel">
@@ -37,12 +35,6 @@
           <button id="stop" type="button">Stop</button>
           <button id="progress" type="button" class="secondary">Refresh progress</button>
           <button id="best" type="button" class="secondary">Show best heroes</button>
-        </div>
-        <div class="field-row">
-          <label>
-            <span class="label">Max requests this run</span>
-            <input id="maxRequests" type="number" min="1" placeholder="Unlimited">
-          </label>
         </div>
         <div class="status-grid">
           <div>
