@@ -10,6 +10,7 @@ from database import (
     ensure_hero_refresh_column,
     ensure_schema,
     release_incomplete_assignments,
+    reset_hero_refresh_once,
 )
 from heroes import HEROES, HERO_SLUGS
 
@@ -29,6 +30,7 @@ if not Path(DB_PATH).exists():
     conn.close()
 
 ensure_hero_refresh_column()
+reset_hero_refresh_once()
 release_incomplete_assignments()
 
 
@@ -271,6 +273,10 @@ def submit():
         conn = db()
         cur = conn.cursor()
         cur.execute("BEGIN")
+        cur.execute(
+            "DELETE FROM hero_stats WHERE steamAccountId = ?",
+            (steam_account_id,),
+        )
         for hero in heroes:
             try:
                 hero_id = int(hero["heroId"])
