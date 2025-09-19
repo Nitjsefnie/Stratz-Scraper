@@ -30,6 +30,7 @@ def ensure_schema() -> None:
             depth INTEGER,
             assigned_to TEXT,
             assigned_at DATETIME,
+            hero_refreshed_at DATETIME,
             hero_done INTEGER DEFAULT 0,
             discover_done INTEGER DEFAULT 0
         );
@@ -76,4 +77,22 @@ def release_incomplete_assignments() -> None:
     conn.close()
 
 
-__all__ = ["db", "ensure_schema", "release_incomplete_assignments", "DB_PATH"]
+def ensure_hero_refresh_column() -> None:
+    """Ensure the players table has the hero_refreshed_at column."""
+
+    conn = db()
+    cur = conn.cursor()
+    columns = cur.execute("PRAGMA table_info(players)").fetchall()
+    if not any(col[1] == "hero_refreshed_at" for col in columns):
+        cur.execute("ALTER TABLE players ADD COLUMN hero_refreshed_at DATETIME")
+        conn.commit()
+    conn.close()
+
+
+__all__ = [
+    "db",
+    "ensure_schema",
+    "release_incomplete_assignments",
+    "ensure_hero_refresh_column",
+    "DB_PATH",
+]

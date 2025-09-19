@@ -4,7 +4,13 @@ from pathlib import Path
 
 from flask import Flask, Response, abort, jsonify, render_template, request
 
-from database import DB_PATH, db, ensure_schema, release_incomplete_assignments
+from database import (
+    DB_PATH,
+    db,
+    ensure_hero_refresh_column,
+    ensure_schema,
+    release_incomplete_assignments,
+)
 from heroes import HEROES, HERO_SLUGS
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
@@ -22,6 +28,7 @@ if not Path(DB_PATH).exists():
     conn.commit()
     conn.close()
 
+ensure_hero_refresh_column()
 release_incomplete_assignments()
 
 
@@ -60,14 +67,55 @@ def task():
 
     conn = db()
     conn.execute("BEGIN IMMEDIATE")
+    cur = conn.cursor()
+
+    counter_row = cur.execute(
+        "SELECT value FROM meta WHERE key=?",
+        ("task_assignment_counter",),
+    ).fetchone()
+    try:
+        current_count = int(counter_row["value"]) if counter_row else 0
+    except (TypeError, ValueError):
+        current_count = 0
+    next_count = current_count + 1
+    refresh_due = next_count % 10 == 0
 
     task_payload = None
-    hero_pending = conn.execute(
-        "SELECT 1 FROM players WHERE hero_done=0 LIMIT 1"
-    ).fetchone()
 
-    if hero_pending:
-        hero_candidate = conn.execute(
+    if refresh_due:
+        refresh_candidate = cur.execute(
+            """
+            SELECT steamAccountId
+            FROM players
+            WHERE hero_done=1
+              AND assigned_to IS NULL
+            ORDER BY COALESCE(hero_refreshed_at, '1970-01-01') ASC,
+                     steamAccountId ASC
+            LIMIT 1
+            """
+        ).fetchone()
+        if refresh_candidate:
+            assigned_row = cur.execute(
+                """
+                UPDATE players
+                SET hero_done=0,
+                    assigned_to='hero',
+                    assigned_at=CURRENT_TIMESTAMP
+                WHERE steamAccountId=?
+                  AND hero_done=1
+                  AND assigned_to IS NULL
+                RETURNING steamAccountId
+                """,
+                (refresh_candidate["steamAccountId"],),
+            ).fetchone()
+            if assigned_row:
+                task_payload = {
+                    "type": "fetch_hero_stats",
+                    "steamAccountId": int(assigned_row["steamAccountId"]),
+                }
+
+    if task_payload is None:
+        hero_candidate = cur.execute(
             """
             SELECT steamAccountId
             FROM players
@@ -78,12 +126,13 @@ def task():
             """
         ).fetchone()
         if hero_candidate:
-            assigned_row = conn.execute(
+            assigned_row = cur.execute(
                 """
                 UPDATE players
                 SET assigned_to='hero',
                     assigned_at=CURRENT_TIMESTAMP
                 WHERE steamAccountId=?
+                  AND hero_done=0
                   AND assigned_to IS NULL
                 RETURNING steamAccountId
                 """,
@@ -94,37 +143,52 @@ def task():
                     "type": "fetch_hero_stats",
                     "steamAccountId": int(assigned_row["steamAccountId"]),
                 }
-    else:
-        discover_candidate = conn.execute(
-            """
-            SELECT steamAccountId, depth
-            FROM players
-            WHERE hero_done=1
-              AND discover_done=0
-              AND (assigned_to IS NULL OR assigned_to='discover')
-            ORDER BY COALESCE(depth, 0) ASC, steamAccountId ASC
-            LIMIT 1
-            """
+
+    if task_payload is None:
+        hero_pending = cur.execute(
+            "SELECT 1 FROM players WHERE hero_done=0 LIMIT 1"
         ).fetchone()
-        if discover_candidate:
-            assigned_row = conn.execute(
+        if not hero_pending:
+            discover_candidate = cur.execute(
                 """
-                UPDATE players
-                SET assigned_to='discover',
-                    assigned_at=CURRENT_TIMESTAMP
-                WHERE steamAccountId=?
+                SELECT steamAccountId, depth
+                FROM players
+                WHERE hero_done=1
+                  AND discover_done=0
                   AND (assigned_to IS NULL OR assigned_to='discover')
-                RETURNING steamAccountId, depth
-                """,
-                (discover_candidate["steamAccountId"],),
+                ORDER BY COALESCE(depth, 0) ASC, steamAccountId ASC
+                LIMIT 1
+                """
             ).fetchone()
-            if assigned_row:
-                depth_value = assigned_row["depth"]
-                task_payload = {
-                    "type": "discover_matches",
-                    "steamAccountId": int(assigned_row["steamAccountId"]),
-                    "depth": int(depth_value) if depth_value is not None else 0,
-                }
+            if discover_candidate:
+                assigned_row = cur.execute(
+                    """
+                    UPDATE players
+                    SET assigned_to='discover',
+                        assigned_at=CURRENT_TIMESTAMP
+                    WHERE steamAccountId=?
+                      AND (assigned_to IS NULL OR assigned_to='discover')
+                    RETURNING steamAccountId, depth
+                    """,
+                    (discover_candidate["steamAccountId"],),
+                ).fetchone()
+                if assigned_row:
+                    depth_value = assigned_row["depth"]
+                    task_payload = {
+                        "type": "discover_matches",
+                        "steamAccountId": int(assigned_row["steamAccountId"]),
+                        "depth": int(depth_value) if depth_value is not None else 0,
+                    }
+
+    if task_payload:
+        cur.execute(
+            """
+            INSERT INTO meta (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value
+            """,
+            ("task_assignment_counter", str(next_count)),
+        )
 
     conn.commit()
     conn.close()
@@ -155,6 +219,7 @@ def reset_task():
             """
             UPDATE players
             SET hero_done=0,
+                hero_refreshed_at=NULL,
                 assigned_to=NULL,
                 assigned_at=NULL
             WHERE steamAccountId=?
@@ -249,6 +314,7 @@ def submit():
             """
             UPDATE players
             SET hero_done=1,
+                hero_refreshed_at=CURRENT_TIMESTAMP,
                 assigned_to=NULL,
                 assigned_at=NULL
             WHERE steamAccountId=?
