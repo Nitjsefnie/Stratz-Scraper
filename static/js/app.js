@@ -2,6 +2,7 @@ const state = {
   running: false,
   backoff: 1000,
   maxBackoff: 60_000,
+  requestsRemaining: null,
 };
 
 const elements = {
@@ -19,6 +20,8 @@ const elements = {
   progressText: document.getElementById("progressText"),
   backoffText: document.getElementById("backoffText"),
   statusChip: document.getElementById("runStatus"),
+  maxRequests: document.getElementById("maxRequests"),
+  requestsRemaining: document.getElementById("requestsRemaining"),
 };
 
 function setCookie(name, value, days) {
@@ -61,6 +64,38 @@ function updateBackoffDisplay() {
   elements.backoffText.textContent = formatDuration(state.backoff);
 }
 
+function updateRequestsRemainingDisplay() {
+  if (!elements.requestsRemaining) return;
+  if (typeof state.requestsRemaining === "number") {
+    elements.requestsRemaining.textContent = state.requestsRemaining;
+  } else {
+    elements.requestsRemaining.textContent = "—";
+  }
+}
+
+function configureRequestLimit() {
+  if (!elements.maxRequests) {
+    state.requestsRemaining = null;
+    updateRequestsRemainingDisplay();
+    return;
+  }
+
+  const max = parseInt(elements.maxRequests.value, 10);
+  if (Number.isFinite(max) && max > 0) {
+    state.requestsRemaining = max;
+  } else {
+    state.requestsRemaining = null;
+  }
+  updateRequestsRemainingDisplay();
+}
+
+function decrementRequestsRemaining() {
+  if (typeof state.requestsRemaining === "number") {
+    state.requestsRemaining = Math.max(0, state.requestsRemaining - 1);
+    updateRequestsRemainingDisplay();
+  }
+}
+
 function setRunning(running) {
   state.running = running;
   if (!running) {
@@ -75,6 +110,7 @@ function setRunning(running) {
     updateBackoffDisplay();
   }
   updateButtons();
+  updateRequestsRemainingDisplay();
 }
 
 function setErrorState(message) {
@@ -235,6 +271,9 @@ async function seedRange() {
 async function workLoop() {
   setRunning(true);
   log("Worker started.");
+  if (typeof state.requestsRemaining === "number") {
+    log(`Request limit: ${state.requestsRemaining}.`);
+  }
   updateBackoffDisplay();
 
   while (state.running) {
@@ -252,6 +291,12 @@ async function workLoop() {
       await submitBulk(taskId, heroes);
       log(`Submitted ${heroes.length} heroes for ${taskId}.`);
       await refreshProgress();
+      decrementRequestsRemaining();
+      if (typeof state.requestsRemaining === "number" && state.requestsRemaining === 0) {
+        log("Reached request limit. Stopping worker.");
+        setRunning(false);
+        break;
+      }
       state.backoff = 1000;
       updateBackoffDisplay();
       await delay(500);
@@ -291,6 +336,7 @@ function initialise() {
   }
   updateButtons();
   updateBackoffDisplay();
+  configureRequestLimit();
   refreshProgress().catch((error) => log(error.message));
   loadBest().catch((error) => log(error.message));
 }
@@ -307,6 +353,7 @@ elements.saveToken.addEventListener("click", () => {
 
 elements.begin.addEventListener("click", () => {
   if (!state.running) {
+    configureRequestLimit();
     workLoop();
   }
 });
@@ -327,8 +374,18 @@ elements.best.addEventListener("click", () => {
     .catch((error) => log(error.message));
 });
 
-elements.seedBtn.addEventListener("click", () => {
-  seedRange().catch((error) => log(error.message));
-});
+if (elements.seedBtn) {
+  elements.seedBtn.addEventListener("click", () => {
+    seedRange().catch((error) => log(error.message));
+  });
+}
+
+if (elements.maxRequests) {
+  elements.maxRequests.addEventListener("input", () => {
+    if (!state.running) {
+      configureRequestLimit();
+    }
+  });
+}
 
 initialise();

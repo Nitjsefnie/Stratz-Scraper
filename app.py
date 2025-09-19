@@ -10,10 +10,33 @@ ensure_schema()
 release_incomplete_assignments()
 
 
+def is_local_request() -> bool:
+    """Return True if the active request originates from localhost."""
+
+    local_hosts = {"127.0.0.1", "::1"}
+    remote_addr = (request.remote_addr or "").strip()
+    if remote_addr in local_hosts or remote_addr.startswith("127."):
+        return True
+
+    access_route = request.access_route or []
+    for addr in access_route:
+        addr = (addr or "").strip()
+        if addr in local_hosts or addr.startswith("127."):
+            return True
+
+    forwarded_for = request.headers.get("X-Forwarded-For", "")
+    for addr in forwarded_for.split(","):
+        addr = addr.strip()
+        if addr and (addr in local_hosts or addr.startswith("127.")):
+            return True
+
+    return False
+
+
 @app.get("/")
 def index():
     """Serve the main web interface."""
-    return render_template("index.html")
+    return render_template("index.html", show_seed=is_local_request())
 
 
 @app.post("/task")
@@ -116,6 +139,9 @@ def progress():
 
 @app.get("/seed")
 def seed():
+    if not is_local_request():
+        return Response("Forbidden", status=403)
+
     try:
         start = int(request.args.get("start"))
         end = int(request.args.get("end"))
