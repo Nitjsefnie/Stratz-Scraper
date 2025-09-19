@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Dota Distributed Scraper (Stratz)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+  </head>
+  <body>
+    <main class="container">
+      <header class="page-header">
+        <div>
+          <h1>Dota Distributed Scraper</h1>
+          <p class="lead">
+            Coordinate browser workers to fetch Stratz hero performance data and push the
+            best heroes for each player into a shared database.
+          </p>
+        </div>
+        <div class="status-chip" id="runStatus">Idle</div>
+      </header>
+
+      <section class="card">
+        <h2>Stratz Token</h2>
+        <p>
+          Paste a valid Stratz API token. It is stored only in your browser as a cookie.
+        </p>
+        <div class="field-row">
+          <input id="token" type="text" placeholder="Paste Stratz API token" autocomplete="off">
+          <button id="saveToken" type="button" class="secondary">Save token</button>
+        </div>
+      </section>
+
+      <section class="card control-panel">
+        <h2>Worker Controls</h2>
+        <div class="button-row">
+          <button id="begin" type="button" class="primary">Start</button>
+          <button id="stop" type="button">Stop</button>
+          <button id="progress" type="button" class="secondary">Refresh progress</button>
+          <button id="best" type="button" class="secondary">Show best heroes</button>
+        </div>
+        <div class="status-grid">
+          <div>
+            <span class="label">Progress</span>
+            <span id="progressText" class="value">0 / 0</span>
+          </div>
+          <div>
+            <span class="label">Backoff</span>
+            <span id="backoffText" class="value">—</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Seed Player IDs</h2>
+        <p>Optionally enqueue a range of player IDs to process.</p>
+        <div class="field-row">
+          <label>
+            <span class="label">Start ID</span>
+            <input id="seedStart" type="number" min="1" placeholder="e.g. 100000">
+          </label>
+          <label>
+            <span class="label">End ID</span>
+            <input id="seedEnd" type="number" min="1" placeholder="e.g. 100200">
+          </label>
+          <button id="seedBtn" type="button" class="secondary">Seed IDs</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Activity Log</h2>
+        <pre id="log" class="log" aria-live="polite"></pre>
+      </section>
+
+      <section class="card">
+        <h2>Top Heroes</h2>
+        <div id="bestTable" class="table-wrapper">
+          <p class="muted">No data yet.</p>
+        </div>
+      </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}" defer></script>
+  </body>
+</html>
