@@ -86,6 +86,41 @@ body {
   align-items: flex-end;
 }
 
+.token-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.token-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+.token-row .token-input {
+  flex: 2 1 260px;
+}
+
+.token-row .max-input {
+  flex: 1 1 140px;
+}
+
+.token-row button.remove {
+  flex: 0 0 auto;
+  background: rgba(220, 38, 38, 0.15);
+  color: #b91c1c;
+}
+
+@media (prefers-color-scheme: dark) {
+  .token-row button.remove {
+    background: rgba(239, 68, 68, 0.2);
+    color: #fca5a5;
+  }
+}
+
 .field-row input[type="text"],
 .field-row input[type="number"] {
   flex: 1 1 200px;

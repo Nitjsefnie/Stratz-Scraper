@@ -77,7 +77,7 @@ def task():
             )
 
     if candidate_id is None:
-        if counter % 7 == 0 and (not RERUN_INTERVAL or counter % RERUN_INTERVAL != 0):
+        if counter % 3 == 0 and (not RERUN_INTERVAL or counter % RERUN_INTERVAL != 0):
             row = conn.execute(
                 """
                 SELECT id
