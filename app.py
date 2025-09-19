@@ -213,16 +213,21 @@ def reset_task():
     conn = db()
     cur = conn.cursor()
     if task_type == "fetch_hero_stats":
+        has_existing_stats = cur.execute(
+            "SELECT 1 FROM hero_stats WHERE steamAccountId=? LIMIT 1",
+            (steam_account_id,),
+        ).fetchone()
+        hero_done_value = 1 if has_existing_stats else 0
         cur.execute(
             """
             UPDATE players
-            SET hero_done=0,
-                hero_refreshed_at=NULL,
+            SET hero_done=?,
+                hero_refreshed_at=CASE WHEN ? THEN hero_refreshed_at ELSE NULL END,
                 assigned_to=NULL,
                 assigned_at=NULL
             WHERE steamAccountId=?
             """,
-            (steam_account_id,),
+            (hero_done_value, hero_done_value, steam_account_id),
         )
     elif task_type == "discover_matches":
         cur.execute(
