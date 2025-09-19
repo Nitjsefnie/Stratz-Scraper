@@ -1,15 +1,27 @@
 #!/usr/bin/env python3
 """Flask application providing the Stratz distributed scraping UI and API."""
+from pathlib import Path
+
 from flask import Flask, Response, jsonify, render_template, request
 
-from database import db, ensure_schema, release_incomplete_assignments
+from database import DB_PATH, db, ensure_schema, release_incomplete_assignments
 from heroes import HEROES
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
-ensure_schema()
-release_incomplete_assignments()
 
-RERUN_INTERVAL = 10
+if not Path(DB_PATH).exists():
+    ensure_schema()
+    conn = db()
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO players (steamAccountId, depth, hero_done, discover_done)
+        VALUES (293053907, 0, 0, 0)
+        """
+    )
+    conn.commit()
+    conn.close()
+
+release_incomplete_assignments()
 
 
 def is_local_request() -> bool:
@@ -43,79 +55,79 @@ def index():
 
 @app.post("/task")
 def task():
-    """Assign the next available player id to the requesting worker."""
+    """Assign the next available task to the requesting worker."""
+
     conn = db()
     conn.execute("BEGIN IMMEDIATE")
 
-    counter_row = conn.execute(
-        "UPDATE meta SET value = value + 1 WHERE key='task_counter' RETURNING value"
+    task_payload = None
+    hero_pending = conn.execute(
+        "SELECT 1 FROM players WHERE hero_done=0 LIMIT 1"
     ).fetchone()
-    if counter_row is None:
-        conn.execute(
-            "INSERT INTO meta (key, value) VALUES ('task_counter', 1)"
-        )
-        counter = 1
-    else:
-        counter = int(counter_row["value"])
 
-    candidate_id = None
-    if RERUN_INTERVAL and counter % RERUN_INTERVAL == 0:
-        rerun_row = conn.execute(
+    if hero_pending:
+        hero_candidate = conn.execute(
             """
-            SELECT id
+            SELECT steamAccountId
             FROM players
-            WHERE done=1
-            ORDER BY assigned_at ASC, id ASC
+            WHERE hero_done=0
+              AND (assigned_to IS NULL OR assigned_to='hero')
+            ORDER BY COALESCE(depth, 0) ASC, steamAccountId ASC
             LIMIT 1
             """
         ).fetchone()
-        if rerun_row:
-            candidate_id = rerun_row["id"]
-            conn.execute(
-                "DELETE FROM hero_stats WHERE player_id=?",
-                (candidate_id,),
-            )
-
-    if candidate_id is None:
-        if counter % 3 == 0 and (not RERUN_INTERVAL or counter % RERUN_INTERVAL != 0):
-            row = conn.execute(
+        if hero_candidate:
+            assigned_row = conn.execute(
                 """
-                SELECT id
-                FROM players
-                WHERE done=0 AND assigned_to IS NULL
-                ORDER BY id DESC
-                LIMIT 1
-                """
+                UPDATE players
+                SET assigned_to='hero',
+                    assigned_at=CURRENT_TIMESTAMP
+                WHERE steamAccountId=?
+                  AND (assigned_to IS NULL OR assigned_to='hero')
+                RETURNING steamAccountId
+                """,
+                (hero_candidate["steamAccountId"],),
             ).fetchone()
-        else:
-            row = conn.execute(
-                """
-                SELECT id
-                FROM players
-                WHERE done=0 AND assigned_to IS NULL
-                ORDER BY id
-                LIMIT 1
-                """
-            ).fetchone()
-        candidate_id = row["id"] if row else None
-
-    assigned_row = None
-    if candidate_id is not None:
-        assigned_row = conn.execute(
+            if assigned_row:
+                task_payload = {
+                    "type": "fetch_hero_stats",
+                    "steamAccountId": int(assigned_row["steamAccountId"]),
+                }
+    else:
+        discover_candidate = conn.execute(
             """
-            UPDATE players
-            SET done=0,
-                assigned_to='browser',
-                assigned_at=strftime('%s','now')
-            WHERE id=? AND assigned_to IS NULL
-            RETURNING id
-            """,
-            (candidate_id,),
+            SELECT steamAccountId, depth
+            FROM players
+            WHERE hero_done=1
+              AND discover_done=0
+              AND (assigned_to IS NULL OR assigned_to='discover')
+            ORDER BY COALESCE(depth, 0) ASC, steamAccountId ASC
+            LIMIT 1
+            """
         ).fetchone()
+        if discover_candidate:
+            assigned_row = conn.execute(
+                """
+                UPDATE players
+                SET assigned_to='discover',
+                    assigned_at=CURRENT_TIMESTAMP
+                WHERE steamAccountId=?
+                  AND (assigned_to IS NULL OR assigned_to='discover')
+                RETURNING steamAccountId, depth
+                """,
+                (discover_candidate["steamAccountId"],),
+            ).fetchone()
+            if assigned_row:
+                depth_value = assigned_row["depth"]
+                task_payload = {
+                    "type": "discover_matches",
+                    "steamAccountId": int(assigned_row["steamAccountId"]),
+                    "depth": int(depth_value) if depth_value is not None else 0,
+                }
 
     conn.commit()
     conn.close()
-    return jsonify({"task": assigned_row["id"] if assigned_row else None})
+    return jsonify({"task": task_payload})
 
 
 @app.post("/task/reset")
@@ -123,17 +135,52 @@ def reset_task():
     """Release a task so that it can be reassigned after an error."""
     data = request.get_json(force=True) or {}
     try:
-        player_id = int(data["player_id"])
+        steam_account_id = int(data["steamAccountId"])
     except (KeyError, TypeError, ValueError):
-        return jsonify({"status": "error", "message": "player_id is required"}), 400
+        return (
+            jsonify({"status": "error", "message": "steamAccountId is required"}),
+            400,
+        )
 
+    task_type = data.get("type")
     conn = db()
     cur = conn.cursor()
-    cur.execute("DELETE FROM hero_stats WHERE player_id = ?", (player_id,))
-    cur.execute(
-        "UPDATE players SET assigned_to=NULL, assigned_at=NULL, done=0 WHERE id=?",
-        (player_id,),
-    )
+    if task_type == "fetch_hero_stats":
+        cur.execute(
+            "DELETE FROM hero_stats WHERE steamAccountId = ?",
+            (steam_account_id,),
+        )
+        cur.execute(
+            """
+            UPDATE players
+            SET hero_done=0,
+                assigned_to=NULL,
+                assigned_at=NULL
+            WHERE steamAccountId=?
+            """,
+            (steam_account_id,),
+        )
+    elif task_type == "discover_matches":
+        cur.execute(
+            """
+            UPDATE players
+            SET discover_done=0,
+                assigned_to=NULL,
+                assigned_at=NULL
+            WHERE steamAccountId=?
+            """,
+            (steam_account_id,),
+        )
+    else:
+        cur.execute(
+            """
+            UPDATE players
+            SET assigned_to=NULL,
+                assigned_at=NULL
+            WHERE steamAccountId=?
+            """,
+            (steam_account_id,),
+        )
     conn.commit()
     conn.close()
     return jsonify({"status": "ok"})
@@ -143,54 +190,162 @@ def reset_task():
 def submit():
     """Persist hero statistics returned by the worker and mark the task complete."""
     data = request.get_json(force=True)
-    pid = int(data["player_id"])
-    heroes = data.get("heroes", [])
+    task_type = data.get("type")
 
-    conn = db()
-    cur = conn.cursor()
-    for hero in heroes:
-        hid = int(hero["hero_id"])
-        matches = int(hero["games"])
-        wins = int(hero.get("wins", 0))
-        name = HEROES.get(hid)
-        if not name:
-            continue
+    if task_type == "fetch_hero_stats":
+        try:
+            steam_account_id = int(data["steamAccountId"])
+        except (KeyError, TypeError, ValueError):
+            return (
+                jsonify({"status": "error", "message": "steamAccountId is required"}),
+                400,
+            )
+
+        heroes = data.get("heroes", [])
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("BEGIN")
+        for hero in heroes:
+            try:
+                hero_id = int(hero["heroId"])
+                matches_value = hero.get("matches", hero.get("games"))
+                if matches_value is None:
+                    continue
+                matches = int(matches_value)
+                wins = int(hero.get("wins", 0))
+            except (KeyError, TypeError, ValueError):
+                continue
+
+            cur.execute(
+                """
+                INSERT INTO hero_stats (steamAccountId, heroId, matches, wins)
+                VALUES (?,?,?,?)
+                ON CONFLICT(steamAccountId, heroId) DO UPDATE SET
+                    matches=excluded.matches,
+                    wins=excluded.wins
+                """,
+                (steam_account_id, hero_id, matches, wins),
+            )
+
+            hero_name = HEROES.get(hero_id)
+            if not hero_name:
+                continue
+
+            cur.execute(
+                """
+                INSERT INTO best (hero_id, hero_name, player_id, matches, wins)
+                VALUES (?,?,?,?,?)
+                ON CONFLICT(hero_id) DO UPDATE SET
+                    matches=excluded.matches,
+                    wins=excluded.wins,
+                    player_id=excluded.player_id
+                WHERE excluded.matches > best.matches
+                """,
+                (hero_id, hero_name, steam_account_id, matches, wins),
+            )
+
         cur.execute(
             """
-            INSERT INTO hero_stats (player_id, hero_id, hero_name, matches, wins)
-            VALUES (?,?,?,?,?)
-            ON CONFLICT(player_id, hero_id) DO UPDATE SET
-                matches=excluded.matches,
-                wins=excluded.wins
+            UPDATE players
+            SET hero_done=1,
+                assigned_to=NULL,
+                assigned_at=NULL
+            WHERE steamAccountId=?
             """,
-            (pid, hid, name, matches, wins),
+            (steam_account_id,),
         )
-        cur.execute(
-            """
-            INSERT INTO best (hero_id, hero_name, player_id, matches, wins)
-            VALUES (?,?,?,?,?)
-            ON CONFLICT(hero_id) DO UPDATE SET
-                matches=excluded.matches,
-                wins=excluded.wins,
-                player_id=excluded.player_id
-            WHERE excluded.matches > best.matches
-            """,
-            (hid, name, pid, matches, wins),
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "ok"})
+
+    if task_type == "discover_matches":
+        try:
+            steam_account_id = int(data["steamAccountId"])
+        except (KeyError, TypeError, ValueError):
+            return (
+                jsonify({"status": "error", "message": "steamAccountId is required"}),
+                400,
+            )
+
+        discovered_ids = set()
+        for value in data.get("discovered", []):
+            try:
+                discovered_ids.add(int(value))
+            except (TypeError, ValueError):
+                continue
+
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("BEGIN")
+        parent_row = cur.execute(
+            "SELECT depth FROM players WHERE steamAccountId=?",
+            (steam_account_id,),
+        ).fetchone()
+        parent_depth = (
+            int(parent_row["depth"])
+            if parent_row and parent_row["depth"] is not None
+            else 0
         )
 
-    cur.execute("UPDATE players SET done=1, assigned_to=NULL WHERE id=?", (pid,))
-    conn.commit()
-    conn.close()
-    return jsonify({"status": "ok"})
+        next_depth = parent_depth + 1
+        for new_id in discovered_ids:
+            if new_id == steam_account_id:
+                continue
+            cur.execute(
+                """
+                INSERT OR IGNORE INTO players (
+                    steamAccountId,
+                    depth,
+                    hero_done,
+                    discover_done
+                )
+                VALUES (?,?,0,0)
+                """,
+                (new_id, next_depth),
+            )
+
+        cur.execute(
+            """
+            UPDATE players
+            SET discover_done=1,
+                assigned_to=NULL,
+                assigned_at=NULL
+            WHERE steamAccountId=?
+            """,
+            (steam_account_id,),
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "ok"})
+
+    return (
+        jsonify({"status": "error", "message": "Unknown submit type"}),
+        400,
+    )
 
 
 @app.get("/progress")
 def progress():
     conn = db()
     total = conn.execute("SELECT COUNT(*) AS c FROM players").fetchone()["c"]
-    done = conn.execute("SELECT COUNT(*) AS c FROM players WHERE done=1").fetchone()["c"]
+    hero_done = (
+        conn.execute(
+            "SELECT COUNT(*) AS c FROM players WHERE hero_done=1"
+        ).fetchone()["c"]
+    )
+    discover_done = (
+        conn.execute(
+            "SELECT COUNT(*) AS c FROM players WHERE discover_done=1"
+        ).fetchone()["c"]
+    )
     conn.close()
-    return jsonify({"total": total, "done": done})
+    return jsonify(
+        {
+            "players_total": total,
+            "hero_done": hero_done,
+            "discover_done": discover_done,
+        }
+    )
 
 
 @app.get("/seed")
@@ -211,7 +366,18 @@ def seed():
     cur = conn.cursor()
     cur.execute("BEGIN")
     for pid in range(start, end + 1):
-        cur.execute("INSERT OR IGNORE INTO players (id) VALUES (?)", (pid,))
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO players (
+                steamAccountId,
+                depth,
+                hero_done,
+                discover_done
+            )
+            VALUES (?,?,0,0)
+            """,
+            (pid, 0),
+        )
     conn.commit()
     conn.close()
     return jsonify({"seeded": [start, end]})

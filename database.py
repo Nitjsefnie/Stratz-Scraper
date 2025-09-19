@@ -13,53 +13,48 @@ def db():
 
 
 def ensure_schema() -> None:
-    """Ensure the SQLite schema exists before the app starts."""
+    """Recreate the SQLite schema used by the scraper."""
+
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     conn = db()
     cur = conn.cursor()
-    cur.execute(
+    cur.executescript(
         """
-    CREATE TABLE IF NOT EXISTS players (
-        id INTEGER PRIMARY KEY,
-        assigned_to TEXT,
-        assigned_at INTEGER,
-        done INTEGER DEFAULT 0
-    )
-    """
-    )
-    cur.execute(
+        DROP TABLE IF EXISTS hero_stats;
+        DROP TABLE IF EXISTS players;
+        DROP TABLE IF EXISTS meta;
+        DROP TABLE IF EXISTS best;
+
+        CREATE TABLE players (
+            steamAccountId INTEGER PRIMARY KEY,
+            depth INTEGER,
+            assigned_to TEXT,
+            assigned_at DATETIME,
+            hero_done INTEGER DEFAULT 0,
+            discover_done INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE hero_stats (
+            steamAccountId INTEGER,
+            heroId INTEGER,
+            matches INTEGER,
+            wins INTEGER,
+            PRIMARY KEY (steamAccountId, heroId)
+        );
+
+        CREATE TABLE best (
+            hero_id INTEGER PRIMARY KEY,
+            hero_name TEXT,
+            player_id INTEGER,
+            matches INTEGER,
+            wins INTEGER
+        );
+
+        CREATE TABLE meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
         """
-    CREATE TABLE IF NOT EXISTS hero_stats (
-        player_id INTEGER,
-        hero_id INTEGER,
-        hero_name TEXT,
-        matches INTEGER,
-        wins INTEGER,
-        PRIMARY KEY (player_id, hero_id)
-    )
-    """
-    )
-    cur.execute(
-        """
-    CREATE TABLE IF NOT EXISTS best (
-        hero_id INTEGER PRIMARY KEY,
-        hero_name TEXT,
-        player_id INTEGER,
-        matches INTEGER,
-        wins INTEGER
-    )
-    """
-    )
-    cur.execute(
-        """
-    CREATE TABLE IF NOT EXISTS meta (
-        key TEXT PRIMARY KEY,
-        value INTEGER NOT NULL
-    )
-    """
-    )
-    cur.execute(
-        "INSERT OR IGNORE INTO meta (key, value) VALUES ('task_counter', 0)"
     )
     conn.commit()
     conn.close()
@@ -67,14 +62,14 @@ def ensure_schema() -> None:
 
 def release_incomplete_assignments() -> None:
     """Release tasks that were assigned but never completed."""
+
     conn = db()
     conn.execute(
         """
         UPDATE players
         SET assigned_to=NULL,
             assigned_at=NULL
-        WHERE done=0
-          AND assigned_to IS NOT NULL
+        WHERE assigned_to IS NOT NULL
         """
     )
     conn.commit()
