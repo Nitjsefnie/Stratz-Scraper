@@ -77,15 +77,26 @@ def task():
             )
 
     if candidate_id is None:
-        row = conn.execute(
-            """
-            SELECT id
-            FROM players
-            WHERE done=0 AND assigned_to IS NULL
-            ORDER BY id
-            LIMIT 1
-            """
-        ).fetchone()
+        if counter % 7 == 0 and (not RERUN_INTERVAL or counter % RERUN_INTERVAL != 0):
+            row = conn.execute(
+                """
+                SELECT id
+                FROM players
+                WHERE done=0 AND assigned_to IS NULL
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+                SELECT id
+                FROM players
+                WHERE done=0 AND assigned_to IS NULL
+                ORDER BY id
+                LIMIT 1
+                """
+            ).fetchone()
         candidate_id = row["id"] if row else None
 
     assigned_row = None
