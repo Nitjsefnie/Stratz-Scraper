@@ -12,6 +12,7 @@ app = Flask(__name__, static_folder="static", template_folder="templates")
 if not Path(DB_PATH).exists():
     ensure_schema()
     conn = db()
+    conn.execute('PRAGMA journal_mode=WAL;')
     conn.execute(
         """
         INSERT OR IGNORE INTO players (steamAccountId, depth, hero_done, discover_done)
