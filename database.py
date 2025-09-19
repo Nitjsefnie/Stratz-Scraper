@@ -89,10 +89,35 @@ def ensure_hero_refresh_column() -> None:
     conn.close()
 
 
+def reset_hero_refresh_once() -> None:
+    """Reset hero_refreshed_at for all players the first time the app restarts."""
+
+    conn = db()
+    cur = conn.cursor()
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+    )
+    conn.commit()
+    cur.execute("BEGIN")
+    reset_marker = cur.execute(
+        "SELECT value FROM meta WHERE key=?",
+        ("hero_refresh_reset_done",),
+    ).fetchone()
+    if reset_marker is None:
+        cur.execute("UPDATE players SET hero_refreshed_at=NULL")
+        cur.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?)",
+            ("hero_refresh_reset_done", "1"),
+        )
+    conn.commit()
+    conn.close()
+
+
 __all__ = [
     "db",
     "ensure_schema",
     "release_incomplete_assignments",
     "ensure_hero_refresh_column",
+    "reset_hero_refresh_once",
     "DB_PATH",
 ]
