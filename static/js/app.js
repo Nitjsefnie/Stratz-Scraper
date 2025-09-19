@@ -117,6 +117,74 @@ function parseMaxRequests(value) {
   return Number.isFinite(max) && max > 0 ? max : null;
 }
 
+function gatherStratzTokens(preferredToken) {
+  const tokens = [];
+  const seen = new Set();
+
+  const addToken = (value) => {
+    if (typeof value !== "string") {
+      return;
+    }
+    const trimmed = value.trim();
+    if (trimmed.length === 0 || seen.has(trimmed)) {
+      return;
+    }
+    seen.add(trimmed);
+    tokens.push(trimmed);
+  };
+
+  addToken(preferredToken ?? "");
+  state.tokens.forEach((entry) => addToken(entry.value));
+
+  return tokens;
+}
+
+async function executeStratzQueryWithTokens(query, variables, tokens, startIndex = 0) {
+  if (!Array.isArray(tokens) || tokens.length === 0) {
+    throw new Error("Stratz token is not set");
+  }
+
+  const total = tokens.length;
+  let lastError = null;
+
+  for (let offset = 0; offset < total; offset += 1) {
+    const tokenIndex = (startIndex + offset) % total;
+    const candidateToken = tokens[tokenIndex];
+
+    try {
+      const response = await fetch("https://api.stratz.com/graphql", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${candidateToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ query, variables }),
+      });
+
+      if (!response.ok) {
+        lastError = new Error(`Stratz API returned ${response.status}`);
+        continue;
+      }
+
+      const payload = await response.json();
+
+      if (payload && Array.isArray(payload.errors) && payload.errors.length > 0) {
+        const message = payload.errors
+          .map((error) => (typeof error?.message === "string" ? error.message : null))
+          .find((msg) => msg);
+        lastError = new Error(message ?? "Stratz API returned errors");
+        continue;
+      }
+
+      return { payload, tokenIndex };
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
+  throw lastError ?? new Error("Stratz request failed");
+}
+
 function persistTokens() {
  const payload = state.tokens
     .map((token) => ({
@@ -326,7 +394,12 @@ async function fetchPlayerHeroes(playerId, token) {
 }
 
 async function discoverMatches(playerId, token, { take = 100, skip = 0 } = {}) {
-  if (!token) {
+  const pageSizeCandidate = Number.isFinite(take) && take > 0 ? Math.floor(take) : 100;
+  const pageSize = Math.max(1, pageSizeCandidate);
+  const startingSkip = Number.isFinite(skip) && skip > 0 ? Math.floor(skip) : 0;
+
+  const tokens = gatherStratzTokens(token);
+  if (!tokens.length) {
     throw new Error("Stratz token is not set");
   }
 
@@ -343,43 +416,48 @@ async function discoverMatches(playerId, token, { take = 100, skip = 0 } = {}) {
     }
   `;
 
-  const response = await fetch("https://api.stratz.com/graphql", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ query, variables: { steamAccountId: playerId, take, skip } }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Stratz API returned ${response.status}`);
-  }
-
-  const data = await response.json();
-  const matches = data?.data?.player?.matches;
-  if (!Array.isArray(matches)) {
-    return [];
-  }
-
   const discovered = new Set();
-  matches.forEach((match) => {
-    if (!Array.isArray(match?.players)) {
-      return;
+  let nextSkip = startingSkip;
+  let tokenIndex = 0;
+
+  while (true) {
+    const { payload, tokenIndex: usedIndex } = await executeStratzQueryWithTokens(
+      query,
+      { steamAccountId: playerId, take: pageSize, skip: nextSkip },
+      tokens,
+      tokenIndex,
+    );
+
+    const matches = payload?.data?.player?.matches;
+    if (!Array.isArray(matches) || matches.length === 0) {
+      break;
     }
-    match.players.forEach((participant) => {
-      const rawId = participant?.steamAccountId;
-      const id =
-        typeof rawId === "number"
-          ? rawId
-          : typeof rawId === "string"
-            ? Number.parseInt(rawId, 10)
-            : null;
-      if (Number.isFinite(id) && id !== playerId) {
-        discovered.add(id);
+
+    matches.forEach((match) => {
+      if (!Array.isArray(match?.players)) {
+        return;
       }
+      match.players.forEach((participant) => {
+        const rawId = participant?.steamAccountId;
+        const id =
+          typeof rawId === "number"
+            ? rawId
+            : typeof rawId === "string"
+              ? Number.parseInt(rawId, 10)
+              : null;
+        if (Number.isFinite(id) && id !== playerId) {
+          discovered.add(id);
+        }
+      });
     });
-  });
+
+    if (matches.length < pageSize) {
+      break;
+    }
+
+    nextSkip += matches.length;
+    tokenIndex = (usedIndex + 1) % tokens.length;
+  }
 
   return Array.from(discovered);
 }
