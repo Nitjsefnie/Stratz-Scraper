@@ -1,7 +1,7 @@
 const state = {
   running: false,
   backoff: 1000,
-  maxBackoff: 60_000,
+  maxBackoff: 86_400_000,
   requestsRemaining: null,
 };
 
@@ -315,7 +315,7 @@ async function workLoop() {
         }
       }
       await delay(state.backoff);
-      state.backoff = Math.min(state.backoff * 2, state.maxBackoff);
+      state.backoff = Math.min(Math.ceil(state.backoff * 1.1), state.maxBackoff);
       updateBackoffDisplay();
       elements.statusChip.textContent = "Running";
       elements.statusChip.classList.remove("error");
@@ -336,7 +336,6 @@ function initialise() {
   }
   updateButtons();
   updateBackoffDisplay();
-  configureRequestLimit();
   refreshProgress().catch((error) => log(error.message));
   loadBest().catch((error) => log(error.message));
 }
@@ -353,7 +352,6 @@ elements.saveToken.addEventListener("click", () => {
 
 elements.begin.addEventListener("click", () => {
   if (!state.running) {
-    configureRequestLimit();
     workLoop();
   }
 });
