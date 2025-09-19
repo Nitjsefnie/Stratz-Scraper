@@ -118,7 +118,7 @@ function parseMaxRequests(value) {
 }
 
 function persistTokens() {
-  const payload = state.tokens
+ const payload = state.tokens
     .map((token) => ({
       token: token.value.trim(),
       maxRequests: parseMaxRequests(token.maxRequests),
@@ -285,43 +285,44 @@ async function resetTask(task) {
 
 async function fetchPlayerHeroes(playerId, token) {
   if (!token) {
-    throw new Error("Stratz token is not set");
+    throw new Error('Stratz token is not set');
   }
 
   const query = `
-    query PlayerHeroes($steamAccountId: Long!) {
-      player(steamAccountId: $steamAccountId) {
-        heroes {
+    query HeroPerf($id: Long!) {
+      player(steamAccountId: $id) {
+        heroesPerformance(request: { take: 999999, gameModeIds: [1, 22] }) {
           heroId
-          games
-          wins
+          matchCount
+          winCount
         }
       }
     }
   `;
-  const response = await fetch("https://api.stratz.com/graphql", {
-    method: "POST",
+  const response = await fetch('https://api.stratz.com/graphql', {
+    method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
+      'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ query, variables: { steamAccountId: playerId } }),
+    body: JSON.stringify({ query, variables: { id: playerId } }),
   });
+
   if (!response.ok) {
     throw new Error(`Stratz API returned ${response.status}`);
   }
+
   const data = await response.json();
-  const heroes = data?.data?.player?.heroes;
+  const heroes = data?.data?.player?.heroesPerformance;
   if (!Array.isArray(heroes)) {
     return [];
   }
-  return heroes
-    .filter((hero) => Number.isFinite(hero?.heroId))
-    .map((hero) => ({
-      heroId: hero.heroId,
-      games: hero?.games ?? 0,
-      wins: hero?.wins ?? 0,
-    }));
+
+  return heroes.map((hero) => ({
+    heroId: hero.heroId,
+    games: hero.matchCount,
+    wins: hero.winCount,
+  }));
 }
 
 async function discoverMatches(playerId, token, { take = 100, skip = 0 } = {}) {
