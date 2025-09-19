@@ -9,17 +9,16 @@ from heroes import HEROES
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 
-if not Path(DB_PATH).exists():
-    ensure_schema()
-    conn = db()
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO players (steamAccountId, depth, hero_done, discover_done)
-        VALUES (293053907, 0, 0, 0)
-        """
-    )
-    conn.commit()
-    conn.close()
+ensure_schema()
+conn = db()
+conn.execute(
+    """
+    INSERT OR IGNORE INTO players (steamAccountId, depth, hero_done, discover_done)
+    VALUES (293053907, 0, 0, 0)
+    """
+)
+conn.commit()
+conn.close()
 
 release_incomplete_assignments()
 
