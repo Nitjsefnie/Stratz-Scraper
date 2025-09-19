@@ -23,12 +23,6 @@ const elements = {
   requestsRemaining: document.getElementById("requestsRemaining"),
 };
 
-function setCookie(name, value, days) {
-  const date = new Date();
-  date.setTime(date.getTime() + days * 86400000);
-  document.cookie = `${name}=${value}; expires=${date.toUTCString()}; path=/`;
-}
-
 function getCookie(name) {
   const cname = `${name}=`;
   return document.cookie
@@ -36,6 +30,10 @@ function getCookie(name) {
     .map((c) => c.trim())
     .find((c) => c.startsWith(cname))
     ?.slice(cname.length);
+}
+
+function clearCookie(name) {
+  document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`;
 }
 
 function delay(ms) {
@@ -119,10 +117,6 @@ function parseMaxRequests(value) {
   return Number.isFinite(max) && max > 0 ? max : null;
 }
 
-function clearCookie(name) {
-  document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`;
-}
-
 function persistTokens() {
   const payload = state.tokens
     .map((token) => ({
@@ -132,11 +126,23 @@ function persistTokens() {
     .filter((entry) => entry.token.length > 0);
 
   if (!payload.length) {
+    try {
+      localStorage.removeItem("stratz_tokens");
+    } catch (error) {
+      console.warn("Failed to remove saved tokens from localStorage", error);
+    }
     clearCookie("stratz_tokens");
+    clearCookie("stratz_token");
     return;
   }
 
-  setCookie("stratz_tokens", encodeURIComponent(JSON.stringify(payload)), 30);
+  try {
+    localStorage.setItem("stratz_tokens", JSON.stringify(payload));
+  } catch (error) {
+    console.warn("Failed to persist tokens to localStorage", error);
+  }
+  clearCookie("stratz_tokens");
+  clearCookie("stratz_token");
 }
 
 function getTokenLabel(token) {
@@ -468,11 +474,17 @@ async function workLoopForToken(token) {
   updateRunningState();
 }
 
-function loadTokensFromCookie() {
-  const saved = getCookie("stratz_tokens");
+function loadTokensFromStorage() {
+  let saved = null;
+  try {
+    saved = localStorage.getItem("stratz_tokens");
+  } catch (error) {
+    console.warn("Failed to access localStorage", error);
+  }
+
   if (saved) {
     try {
-      const decoded = JSON.parse(decodeURIComponent(saved));
+      const decoded = JSON.parse(saved);
       if (Array.isArray(decoded)) {
         decoded.forEach((entry) => {
           addTokenRow(
@@ -488,15 +500,41 @@ function loadTokensFromCookie() {
         });
       }
     } catch (error) {
-      console.warn("Failed to load saved tokens", error);
+      console.warn("Failed to load saved tokens from localStorage", error);
     }
   } else {
-    const legacy = getCookie("stratz_token");
-    if (legacy) {
-      addTokenRow({ value: legacy }, { skipPersist: true });
-      clearCookie("stratz_token");
-      persistTokens();
-      log("Migrated saved token to new format.");
+    const cookieSaved = getCookie("stratz_tokens");
+    if (cookieSaved) {
+      try {
+        const decoded = JSON.parse(decodeURIComponent(cookieSaved));
+        if (Array.isArray(decoded)) {
+          decoded.forEach((entry) => {
+            addTokenRow(
+              {
+                value: entry.token ?? "",
+                maxRequests:
+                  entry.maxRequests === null || entry.maxRequests === undefined
+                    ? ""
+                    : entry.maxRequests,
+              },
+              { skipPersist: true },
+            );
+          });
+          persistTokens();
+          log("Migrated saved tokens from cookies to local storage.");
+        }
+      } catch (error) {
+        console.warn("Failed to migrate saved tokens from cookies", error);
+      }
+      clearCookie("stratz_tokens");
+    } else {
+      const legacy = getCookie("stratz_token");
+      if (legacy) {
+        addTokenRow({ value: legacy }, { skipPersist: true });
+        persistTokens();
+        clearCookie("stratz_token");
+        log("Migrated saved token to local storage.");
+      }
     }
   }
 
@@ -507,7 +545,7 @@ function loadTokensFromCookie() {
 }
 
 function initialise() {
-  loadTokensFromCookie();
+  loadTokensFromStorage();
   updateBackoffDisplay();
   updateRequestsRemainingDisplay();
   refreshStatusChip();
