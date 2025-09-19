@@ -72,7 +72,7 @@ def task():
             SELECT steamAccountId
             FROM players
             WHERE hero_done=0
-              AND (assigned_to IS NULL OR assigned_to='hero')
+              AND assigned_to IS NULL
             ORDER BY COALESCE(depth, 0) ASC, steamAccountId ASC
             LIMIT 1
             """
@@ -84,7 +84,7 @@ def task():
                 SET assigned_to='hero',
                     assigned_at=CURRENT_TIMESTAMP
                 WHERE steamAccountId=?
-                  AND (assigned_to IS NULL OR assigned_to='hero')
+                  AND assigned_to IS NULL
                 RETURNING steamAccountId
                 """,
                 (hero_candidate["steamAccountId"],),
