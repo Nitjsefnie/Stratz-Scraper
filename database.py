@@ -7,7 +7,16 @@ DB_PATH = "dota.db"
 
 def db():
     """Return a connection to the application database."""
-    conn = sqlite3.connect(DB_PATH)
+
+    # SQLite raises ``OperationalError: database is locked`` when a write
+    # cannot obtain the required lock immediately.  The scraper frequently
+    # performs concurrent writes (multiple workers submitting results while
+    # the coordinator assigns new tasks), so short lock conflicts are
+    # expected.  Configure every connection with a generous timeout and busy
+    # handler so that it patiently waits for locks to clear instead of
+    # failing the request with HTTP 500.
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.execute("PRAGMA busy_timeout = 5000")
     conn.row_factory = sqlite3.Row
     return conn
 
