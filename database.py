@@ -61,20 +61,47 @@ def ensure_schema() -> None:
     conn.close()
 
 
-def release_incomplete_assignments() -> None:
-    """Release tasks that were assigned but never completed."""
+def release_incomplete_assignments(max_age_minutes: int = 5, connection=None) -> int:
+    """Release stale task assignments.
 
-    conn = db()
-    conn.execute(
+    Parameters
+    ----------
+    max_age_minutes:
+        Tasks assigned longer ago than this threshold are released. The default
+        value of five minutes mirrors the requirement that assignments time out
+        quickly so other workers may continue processing.
+    connection:
+        Optional existing database connection. When provided, the caller is
+        responsible for committing the transaction. Otherwise the helper will
+        create, commit, and close its own connection.
+
+    Returns
+    -------
+    int
+        The number of assignments that were released.
+    """
+
+    age_modifier = f"-{int(max_age_minutes)} minutes"
+    owns_connection = connection is None
+    conn = connection or db()
+    cursor = conn.execute(
         """
         UPDATE players
         SET assigned_to=NULL,
             assigned_at=NULL
         WHERE assigned_to IS NOT NULL
-        """
+          AND (
+              assigned_at IS NULL
+              OR assigned_at <= datetime('now', ?)
+          )
+        """,
+        (age_modifier,),
     )
-    conn.commit()
-    conn.close()
+    released = cursor.rowcount if cursor.rowcount is not None else 0
+    if owns_connection:
+        conn.commit()
+        conn.close()
+    return released
 
 
 def ensure_hero_refresh_column() -> None:
