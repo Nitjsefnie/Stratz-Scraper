@@ -31,7 +31,7 @@ body {
 }
 
 .container {
-  width: min(960px, 100%);
+  width: min(1200px, 100%);
   display: flex;
   flex-direction: column;
   gap: 24px;
@@ -89,15 +89,40 @@ body {
 .token-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
   margin-bottom: 16px;
 }
 
 .token-row {
   display: flex;
-  gap: 12px;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.04);
+}
+
+.token-top {
+  display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.token-fields {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 12px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.token-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .token-row .token-input {
@@ -108,13 +133,60 @@ body {
   flex: 1 1 140px;
 }
 
-.token-row button.remove {
+.token-actions button {
   flex: 0 0 auto;
-  background: rgba(220, 38, 38, 0.15);
+}
+
+.token-actions .token-start {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 10px 20px rgba(31, 120, 255, 0.35);
+}
+
+.token-actions .token-stop {
+  background: rgba(217, 119, 6, 0.16);
+  color: #b45309;
+}
+
+.token-row button.remove {
+  background: rgba(220, 38, 38, 0.16);
   color: #b91c1c;
 }
 
+.token-meta {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.token-meta-value {
+  display: block;
+  margin-top: 4px;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.token-row-running {
+  border-color: rgba(31, 120, 255, 0.45);
+  box-shadow: 0 0 0 1px rgba(31, 120, 255, 0.18);
+}
+
+.token-row-stopping {
+  border-color: rgba(217, 119, 6, 0.45);
+  box-shadow: 0 0 0 1px rgba(217, 119, 6, 0.18);
+}
+
 @media (prefers-color-scheme: dark) {
+  .token-row {
+    background: rgba(17, 24, 39, 0.55);
+    border-color: rgba(148, 163, 184, 0.25);
+  }
+
+  .token-actions .token-stop {
+    background: rgba(251, 191, 36, 0.2);
+    color: #facc15;
+  }
+
   .token-row button.remove {
     background: rgba(239, 68, 68, 0.2);
     color: #fca5a5;
@@ -277,6 +349,18 @@ button:disabled {
 
 .muted {
   color: var(--muted);
+}
+
+.card-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.card-title-row h2 {
+  margin-bottom: 0;
 }
 
 .page-header a {

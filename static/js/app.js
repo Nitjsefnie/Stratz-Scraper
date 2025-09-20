@@ -186,7 +186,7 @@ async function executeStratzQueryWithTokens(query, variables, tokens, startIndex
 }
 
 function persistTokens() {
- const payload = state.tokens
+  const payload = state.tokens
     .map((token) => ({
       token: token.value.trim(),
       maxRequests: parseMaxRequests(token.maxRequests),
@@ -218,22 +218,102 @@ function getTokenLabel(token) {
   return index >= 0 ? index + 1 : token.id;
 }
 
+function updateTokenDisplay(token) {
+  if (!token?.dom) return;
+
+  const {
+    row,
+    tokenInput,
+    maxInput,
+    startBtn,
+    stopBtn,
+    removeBtn,
+    statusValue,
+    backoffValue,
+    requestsValue,
+  } = token.dom;
+
+  tokenInput.value = token.value;
+  tokenInput.disabled = token.running || token.stopRequested;
+
+  maxInput.value = token.maxRequests;
+  maxInput.disabled = token.running || token.stopRequested;
+
+  const trimmed = token.value.trim();
+  startBtn.disabled = token.running || token.stopRequested || trimmed.length === 0;
+  stopBtn.disabled = !token.running || token.stopRequested;
+  removeBtn.disabled = token.running || token.stopRequested;
+
+  let status = "Idle";
+  if (token.running) {
+    status = token.stopRequested ? "Stopping…" : "Running";
+  } else if (token.stopRequested) {
+    status = "Stopping…";
+  }
+  statusValue.textContent = status;
+
+  const showBackoff = token.running || token.stopRequested;
+  backoffValue.textContent = showBackoff ? formatDuration(token.backoff) : "—";
+
+  if (token.requestsRemaining === null || token.requestsRemaining === undefined) {
+    requestsValue.textContent = "∞";
+  } else {
+    requestsValue.textContent = token.requestsRemaining;
+  }
+
+  row.classList.toggle("token-row-running", token.running && !token.stopRequested);
+  row.classList.toggle("token-row-stopping", token.running && token.stopRequested);
+}
+
 function updateRunningState() {
   state.running = state.tokens.some((token) => token.running);
   refreshStatusChip();
   updateButtons();
   updateBackoffDisplay();
   updateRequestsRemainingDisplay();
+  state.tokens.forEach((token) => updateTokenDisplay(token));
 }
 
 function removeToken(id) {
   const index = state.tokens.findIndex((token) => token.id === id);
   if (index === -1) return;
   const [token] = state.tokens.splice(index, 1);
-  token.running = false;
+  if (token) {
+    token.running = false;
+    token.dom = null;
+  }
   renderTokens();
   persistTokens();
   updateRunningState();
+}
+
+function startToken(token) {
+  if (!token || token.running || token.stopRequested) {
+    return;
+  }
+  const trimmed = token.value.trim();
+  if (!trimmed.length) {
+    return;
+  }
+  workLoopForToken(token).catch((error) => {
+    log(
+      `Token #${getTokenLabel(token)}: failed to start worker: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  });
+}
+
+function requestStopForToken(token, { silent = false } = {}) {
+  if (!token || !token.running || token.stopRequested) {
+    return;
+  }
+  token.stopRequested = true;
+  updateTokenDisplay(token);
+  updateButtons();
+  if (!silent) {
+    log(`Token #${getTokenLabel(token)}: stop requested.`);
+  }
 }
 
 function addTokenRow(initial = {}, options = {}) {
@@ -251,6 +331,7 @@ function addTokenRow(initial = {}, options = {}) {
     requestsRemaining: parseMaxRequests(rawMax),
     activeToken: null,
     stopRequested: false,
+    dom: null,
   };
   state.tokens.push(token);
   renderTokens();
@@ -276,6 +357,13 @@ function renderTokens() {
   state.tokens.forEach((token) => {
     const row = document.createElement("div");
     row.className = "token-row";
+    row.dataset.tokenId = token.id;
+
+    const topRow = document.createElement("div");
+    topRow.className = "token-top";
+
+    const fields = document.createElement("div");
+    fields.className = "token-fields";
 
     const tokenInput = document.createElement("input");
     tokenInput.type = "text";
@@ -288,6 +376,7 @@ function renderTokens() {
       token.value = tokenInput.value;
       persistTokens();
       updateButtons();
+      updateTokenDisplay(token);
     });
 
     const maxInput = document.createElement("input");
@@ -304,6 +393,28 @@ function renderTokens() {
         updateRequestsRemainingDisplay();
       }
       persistTokens();
+      updateTokenDisplay(token);
+    });
+
+    fields.append(tokenInput, maxInput);
+
+    const actions = document.createElement("div");
+    actions.className = "token-actions";
+
+    const startBtn = document.createElement("button");
+    startBtn.type = "button";
+    startBtn.className = "token-start";
+    startBtn.textContent = "Start";
+    startBtn.addEventListener("click", () => {
+      startToken(token);
+    });
+
+    const stopBtn = document.createElement("button");
+    stopBtn.type = "button";
+    stopBtn.className = "token-stop";
+    stopBtn.textContent = "Stop";
+    stopBtn.addEventListener("click", () => {
+      requestStopForToken(token);
     });
 
     const removeBtn = document.createElement("button");
@@ -318,8 +429,46 @@ function renderTokens() {
       removeToken(token.id);
     });
 
-    row.append(tokenInput, maxInput, removeBtn);
+    actions.append(startBtn, stopBtn, removeBtn);
+
+    topRow.append(fields, actions);
+
+    const meta = document.createElement("div");
+    meta.className = "token-meta";
+
+    const createMetaItem = (label) => {
+      const container = document.createElement("div");
+      const labelEl = document.createElement("span");
+      labelEl.className = "label";
+      labelEl.textContent = label;
+      const valueEl = document.createElement("span");
+      valueEl.className = "token-meta-value";
+      container.append(labelEl, valueEl);
+      return { container, valueEl };
+    };
+
+    const statusItem = createMetaItem("Status");
+    const backoffItem = createMetaItem("Backoff");
+    const requestsItem = createMetaItem("Requests remaining");
+
+    meta.append(statusItem.container, backoffItem.container, requestsItem.container);
+
+    row.append(topRow, meta);
     elements.tokenList.appendChild(row);
+
+    token.dom = {
+      row,
+      tokenInput,
+      maxInput,
+      startBtn,
+      stopBtn,
+      removeBtn,
+      statusValue: statusItem.valueEl,
+      backoffValue: backoffItem.valueEl,
+      requestsValue: requestsItem.valueEl,
+    };
+
+    updateTokenDisplay(token);
   });
 }
 
@@ -570,8 +719,8 @@ async function workLoopForToken(token) {
   token.activeToken = token.value.trim();
   token.backoff = 1000;
   token.requestsRemaining = parseMaxRequests(token.maxRequests);
+  updateTokenDisplay(token);
   updateRunningState();
-  renderTokens();
   log(`Token #${label}: worker started.`);
   if (typeof token.requestsRemaining === "number") {
     log(`Token #${label}: request limit ${token.requestsRemaining}.`);
@@ -588,6 +737,7 @@ async function workLoopForToken(token) {
         );
         token.backoff = wait;
         updateBackoffDisplay();
+        updateTokenDisplay(token);
         await delay(wait);
         if (token.stopRequested) {
           break;
@@ -626,6 +776,7 @@ async function workLoopForToken(token) {
       if (token.requestsRemaining !== null) {
         token.requestsRemaining = Math.max(0, token.requestsRemaining - 1);
         updateRequestsRemainingDisplay();
+        updateTokenDisplay(token);
         if (token.requestsRemaining === 0) {
           log(`Token #${label}: reached request limit. Stopping worker.`);
           break;
@@ -633,6 +784,7 @@ async function workLoopForToken(token) {
       }
       token.backoff = 1000;
       updateBackoffDisplay();
+      updateTokenDisplay(token);
       await delay(500);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -655,6 +807,7 @@ async function workLoopForToken(token) {
         const wait = 60_000;
         token.backoff = wait;
         updateBackoffDisplay();
+        updateTokenDisplay(token);
         await delay(wait);
       } else {
         await delay(token.backoff);
@@ -663,6 +816,7 @@ async function workLoopForToken(token) {
           state.maxBackoff,
         );
         updateBackoffDisplay();
+        updateTokenDisplay(token);
       }
       if (!token.stopRequested) {
         refreshStatusChip();
@@ -675,8 +829,8 @@ async function workLoopForToken(token) {
   token.activeToken = null;
   token.stopRequested = false;
   token.requestsRemaining = parseMaxRequests(token.maxRequests);
+  updateTokenDisplay(token);
   log(`Token #${label}: worker stopped.`);
-  renderTokens();
   updateRunningState();
 }
 
@@ -774,15 +928,7 @@ elements.begin.addEventListener("click", () => {
     return;
   }
   readyTokens.forEach((token) => {
-    if (!token.running) {
-      workLoopForToken(token).catch((error) => {
-        log(
-          `Token #${getTokenLabel(token)}: failed to start worker: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      });
-    }
+    startToken(token);
   });
 });
 
@@ -792,10 +938,8 @@ elements.stop.addEventListener("click", () => {
     return;
   }
   active.forEach((token) => {
-    token.stopRequested = true;
+    requestStopForToken(token, { silent: true });
   });
-  renderTokens();
-  updateButtons();
   log("Stop requested for all active tokens.");
 });
 
