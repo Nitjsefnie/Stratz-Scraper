@@ -184,6 +184,8 @@ def task():
                         "depth": int(depth_value) if depth_value is not None else 0,
                     }
 
+    should_checkpoint = False
+
     if task_payload:
         cur.execute(
             """
@@ -194,10 +196,17 @@ def task():
             ("task_assignment_counter", str(next_count)),
         )
         if checkpoint_due:
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            should_checkpoint = True
 
     conn.commit()
     conn.close()
+
+    if should_checkpoint:
+        checkpoint_conn = db()
+        try:
+            checkpoint_conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        finally:
+            checkpoint_conn.close()
     return jsonify({"task": task_payload})
 
 
