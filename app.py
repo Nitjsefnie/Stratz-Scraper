@@ -82,6 +82,7 @@ def task():
         current_count = 0
     next_count = current_count + 1
     refresh_due = next_count % 10 == 0
+    checkpoint_due = next_count % 10000 == 0
 
     task_payload = None
 
@@ -192,6 +193,8 @@ def task():
             """,
             ("task_assignment_counter", str(next_count)),
         )
+        if checkpoint_due:
+            conn.execute("PRAGMA wal_checkpoint(FULL);")
 
     conn.commit()
     conn.close()
