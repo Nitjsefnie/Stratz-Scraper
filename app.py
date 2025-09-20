@@ -69,6 +69,7 @@ def task():
 
     conn = db()
     conn.execute("BEGIN IMMEDIATE")
+    release_incomplete_assignments(connection=conn)
     cur = conn.cursor()
 
     counter_row = cur.execute(
