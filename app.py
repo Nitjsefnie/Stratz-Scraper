@@ -194,7 +194,7 @@ def task():
             ("task_assignment_counter", str(next_count)),
         )
         if checkpoint_due:
-            conn.execute("PRAGMA wal_checkpoint(FULL);")
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
 
     conn.commit()
     conn.close()
