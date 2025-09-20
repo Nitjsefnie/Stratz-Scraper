@@ -35,7 +35,6 @@
           <button id="begin" type="button" class="primary">Start</button>
           <button id="stop" type="button">Stop</button>
           <button id="progress" type="button" class="secondary">Refresh progress</button>
-          <button id="best" type="button" class="secondary">Show best heroes</button>
         </div>
         <div class="status-grid">
           <div>
@@ -77,7 +76,10 @@
       </section>
 
       <section class="card">
-        <h2>Top Heroes</h2>
+        <div class="card-title-row">
+          <h2>Top Heroes</h2>
+          <button id="best" type="button" class="secondary">Refresh table</button>
+        </div>
         <div id="bestTable" class="table-wrapper">
           <p class="muted">No data yet.</p>
         </div>
