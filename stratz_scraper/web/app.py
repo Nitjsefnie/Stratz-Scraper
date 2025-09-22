@@ -50,6 +50,53 @@ def create_app() -> Flask:
             conn.execute("BEGIN IMMEDIATE")
             release_incomplete_assignments(existing=conn)
             cur = conn.cursor()
+
+            def assign_discovery() -> dict | None:
+                candidate = cur.execute(
+                    """
+                    SELECT steamAccountId, depth
+                    FROM players
+                    WHERE hero_done=1
+                      AND discover_done=0
+                      AND (assigned_to IS NULL OR assigned_to='discover')
+                    ORDER BY COALESCE(depth, 0) ASC, steamAccountId ASC
+                    LIMIT 1
+                    """,
+                ).fetchone()
+                if not candidate:
+                    return None
+                assigned = cur.execute(
+                    """
+                    UPDATE players
+                    SET assigned_to='discover',
+                        assigned_at=CURRENT_TIMESTAMP
+                    WHERE steamAccountId=?
+                      AND (assigned_to IS NULL OR assigned_to='discover')
+                    RETURNING steamAccountId, depth
+                    """,
+                    (candidate["steamAccountId"],),
+                ).fetchone()
+                if not assigned:
+                    return None
+                depth_value = assigned["depth"]
+                return {
+                    "type": "discover_matches",
+                    "steamAccountId": int(assigned["steamAccountId"]),
+                    "depth": int(depth_value) if depth_value is not None else 0,
+                }
+
+            def restart_discovery_cycle() -> bool:
+                cur.execute(
+                    """
+                    UPDATE players
+                    SET discover_done=0,
+                        depth=CASE WHEN depth=0 THEN 0 ELSE NULL END,
+                        assigned_at=CASE WHEN assigned_to='discover' THEN NULL ELSE assigned_at END,
+                        assigned_to=CASE WHEN assigned_to='discover' THEN NULL ELSE assigned_to END
+                    """,
+                )
+                return True
+
             counter_row = cur.execute(
                 "SELECT value FROM meta WHERE key=?",
                 ("task_assignment_counter",),
@@ -60,8 +107,19 @@ def create_app() -> Flask:
                 current_count = 0
             next_count = current_count + 1
             refresh_due = next_count % 10 == 0
+            discovery_due = next_count % 100 == 0
             checkpoint_due = next_count % 10000 == 0
-            if refresh_due:
+
+            should_truncate_wal = False
+
+            if discovery_due:
+                task_payload = assign_discovery()
+                if task_payload is None:
+                    if restart_discovery_cycle():
+                        should_truncate_wal = True
+                        task_payload = assign_discovery()
+
+            if task_payload is None and refresh_due:
                 refresh_candidate = cur.execute(
                     """
                     SELECT steamAccountId
@@ -92,6 +150,7 @@ def create_app() -> Flask:
                             "type": "fetch_hero_stats",
                             "steamAccountId": int(assigned_row["steamAccountId"]),
                         }
+
             if task_payload is None:
                 hero_candidate = cur.execute(
                     """
@@ -121,41 +180,14 @@ def create_app() -> Flask:
                             "type": "fetch_hero_stats",
                             "steamAccountId": int(assigned_row["steamAccountId"]),
                         }
+
             if task_payload is None:
                 hero_pending = cur.execute(
                     "SELECT 1 FROM players WHERE hero_done=0 LIMIT 1"
                 ).fetchone()
-                if not hero_pending:
-                    discover_candidate = cur.execute(
-                        """
-                        SELECT steamAccountId, depth
-                        FROM players
-                        WHERE hero_done=1
-                          AND discover_done=0
-                          AND (assigned_to IS NULL OR assigned_to='discover')
-                        ORDER BY COALESCE(depth, 0) ASC, steamAccountId ASC
-                        LIMIT 1
-                        """,
-                    ).fetchone()
-                    if discover_candidate:
-                        assigned_row = cur.execute(
-                            """
-                            UPDATE players
-                            SET assigned_to='discover',
-                                assigned_at=CURRENT_TIMESTAMP
-                            WHERE steamAccountId=?
-                              AND (assigned_to IS NULL OR assigned_to='discover')
-                            RETURNING steamAccountId, depth
-                            """,
-                            (discover_candidate["steamAccountId"],),
-                        ).fetchone()
-                        if assigned_row:
-                            depth_value = assigned_row["depth"]
-                            task_payload = {
-                                "type": "discover_matches",
-                                "steamAccountId": int(assigned_row["steamAccountId"]),
-                                "depth": int(depth_value) if depth_value is not None else 0,
-                            }
+                if not hero_pending and not discovery_due:
+                    task_payload = assign_discovery()
+
             if task_payload:
                 cur.execute(
                     """
@@ -165,7 +197,7 @@ def create_app() -> Flask:
                     """,
                     ("task_assignment_counter", str(next_count)),
                 )
-                if checkpoint_due:
+                if checkpoint_due or should_truncate_wal:
                     should_checkpoint = True
         if should_checkpoint:
             with db_connection(write=True) as checkpoint_conn:
@@ -315,13 +347,15 @@ def create_app() -> Flask:
                         continue
                     cur.execute(
                         """
-                        INSERT OR IGNORE INTO players (
+                        INSERT INTO players (
                             steamAccountId,
                             depth,
                             hero_done,
                             discover_done
                         )
                         VALUES (?,?,0,0)
+                        ON CONFLICT(steamAccountId) DO UPDATE SET
+                            depth=excluded.depth
                         """,
                         (new_id, next_depth),
                     )
