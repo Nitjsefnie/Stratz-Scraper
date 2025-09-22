@@ -89,29 +89,24 @@ def create_app() -> Flask:
             maybe_release_incomplete_assignments()
 
             def assign_discovery() -> dict | None:
-                candidate = cur.execute(
-                    """
-                    SELECT steamAccountId, depth
-                    FROM players
-                    WHERE hero_done=1
-                      AND discover_done=0
-                      AND (assigned_to IS NULL OR assigned_to='discover')
-                    ORDER BY COALESCE(depth, 0) ASC, steamAccountId ASC
-                    LIMIT 1
-                    """,
-                ).fetchone()
-                if not candidate:
-                    return None
                 assigned = cur.execute(
                     """
+                    WITH candidate AS (
+                        SELECT steamAccountId, depth
+                        FROM players
+                        WHERE hero_done=1
+                          AND discover_done=0
+                          AND (assigned_to IS NULL OR assigned_to='discover')
+                        ORDER BY COALESCE(depth, 0) ASC, steamAccountId ASC
+                        LIMIT 1
+                    )
                     UPDATE players
                     SET assigned_to='discover',
                         assigned_at=CURRENT_TIMESTAMP
-                    WHERE steamAccountId=?
+                    WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
                       AND (assigned_to IS NULL OR assigned_to='discover')
                     RETURNING steamAccountId, depth
                     """,
-                    (candidate["steamAccountId"],),
                 ).fetchone()
                 if not assigned:
                     return None
@@ -159,66 +154,58 @@ def create_app() -> Flask:
                         candidate_payload = assign_discovery()
 
                 if candidate_payload is None and refresh_due:
-                    refresh_candidate = cur.execute(
+                    assigned_row = cur.execute(
                         """
-                        SELECT steamAccountId
-                        FROM players
-                        WHERE hero_done=1
+                        WITH candidate AS (
+                            SELECT steamAccountId
+                            FROM players
+                            WHERE hero_done=1
+                              AND assigned_to IS NULL
+                            ORDER BY COALESCE(hero_refreshed_at, '1970-01-01') ASC,
+                                     steamAccountId ASC
+                            LIMIT 1
+                        )
+                        UPDATE players
+                        SET hero_done=0,
+                            assigned_to='hero',
+                            assigned_at=CURRENT_TIMESTAMP
+                        WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
+                          AND hero_done=1
                           AND assigned_to IS NULL
-                        ORDER BY COALESCE(hero_refreshed_at, '1970-01-01') ASC,
-                                 steamAccountId ASC
-                        LIMIT 1
+                        RETURNING steamAccountId
                         """,
                     ).fetchone()
-                    if refresh_candidate:
-                        assigned_row = cur.execute(
-                            """
-                            UPDATE players
-                            SET hero_done=0,
-                                assigned_to='hero',
-                                assigned_at=CURRENT_TIMESTAMP
-                            WHERE steamAccountId=?
-                              AND hero_done=1
-                              AND assigned_to IS NULL
-                            RETURNING steamAccountId
-                            """,
-                            (refresh_candidate["steamAccountId"],),
-                        ).fetchone()
-                        if assigned_row:
-                            candidate_payload = {
-                                "type": "fetch_hero_stats",
-                                "steamAccountId": int(assigned_row["steamAccountId"]),
-                            }
+                    if assigned_row:
+                        candidate_payload = {
+                            "type": "fetch_hero_stats",
+                            "steamAccountId": int(assigned_row["steamAccountId"]),
+                        }
 
                 if candidate_payload is None:
-                    hero_candidate = cur.execute(
+                    assigned_row = cur.execute(
                         """
-                        SELECT steamAccountId
-                        FROM players
-                        WHERE hero_done=0
+                        WITH candidate AS (
+                            SELECT steamAccountId
+                            FROM players
+                            WHERE hero_done=0
+                              AND assigned_to IS NULL
+                            ORDER BY COALESCE(depth, 0) ASC, steamAccountId ASC
+                            LIMIT 1
+                        )
+                        UPDATE players
+                        SET assigned_to='hero',
+                            assigned_at=CURRENT_TIMESTAMP
+                        WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
+                          AND hero_done=0
                           AND assigned_to IS NULL
-                        ORDER BY COALESCE(depth, 0) ASC, steamAccountId ASC
-                        LIMIT 1
+                        RETURNING steamAccountId
                         """,
                     ).fetchone()
-                    if hero_candidate:
-                        assigned_row = cur.execute(
-                            """
-                            UPDATE players
-                            SET assigned_to='hero',
-                                assigned_at=CURRENT_TIMESTAMP
-                            WHERE steamAccountId=?
-                              AND hero_done=0
-                              AND assigned_to IS NULL
-                            RETURNING steamAccountId
-                            """,
-                            (hero_candidate["steamAccountId"],),
-                        ).fetchone()
-                        if assigned_row:
-                            candidate_payload = {
-                                "type": "fetch_hero_stats",
-                                "steamAccountId": int(assigned_row["steamAccountId"]),
-                            }
+                    if assigned_row:
+                        candidate_payload = {
+                            "type": "fetch_hero_stats",
+                            "steamAccountId": int(assigned_row["steamAccountId"]),
+                        }
 
                 if candidate_payload is None:
                     hero_pending = cur.execute(
