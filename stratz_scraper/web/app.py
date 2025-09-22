@@ -413,7 +413,6 @@ def create_app() -> Flask:
                 discovered_ids.append(candidate_id)
             with db_connection(write=True) as conn:
                 cur = conn.cursor()
-                cur.execute("BEGIN")
                 next_depth_value = None
                 provided_next_depth = data.get("nextDepth")
                 if provided_next_depth is not None:
@@ -430,7 +429,8 @@ def create_app() -> Flask:
                         except (TypeError, ValueError):
                             parent_depth_value = None
                     if parent_depth_value is None:
-                        parent_row = cur.execute(
+                        parent_row = locked_execute(
+                            cur,
                             "SELECT depth FROM players WHERE steamAccountId=?",
                             (steam_account_id,),
                         ).fetchone()
