@@ -105,100 +105,109 @@ def create_app() -> Flask:
                 current_count = int(counter_row["value"]) if counter_row else 0
             except (TypeError, ValueError):
                 current_count = 0
-            next_count = current_count + 1
-            refresh_due = next_count % 10 == 0
-            discovery_due = next_count % 100 == 0
-            checkpoint_due = next_count % 10000 == 0
+            loop_count = current_count
+            while True:
+                next_count = loop_count + 1
+                refresh_due = next_count % 10 == 0
+                discovery_due = next_count % 100 == 0
+                checkpoint_due = next_count % 10000 == 0
+                should_truncate_wal = False
 
-            should_truncate_wal = False
+                candidate_payload = None
 
-            if discovery_due:
-                task_payload = assign_discovery()
-                if task_payload is None:
-                    if restart_discovery_cycle():
+                if discovery_due:
+                    candidate_payload = assign_discovery()
+                    if candidate_payload is None and restart_discovery_cycle():
                         should_truncate_wal = True
-                        task_payload = assign_discovery()
+                        candidate_payload = assign_discovery()
 
-            if task_payload is None and refresh_due:
-                refresh_candidate = cur.execute(
-                    """
-                    SELECT steamAccountId
-                    FROM players
-                    WHERE hero_done=1
-                      AND assigned_to IS NULL
-                    ORDER BY COALESCE(hero_refreshed_at, '1970-01-01') ASC,
-                             steamAccountId ASC
-                    LIMIT 1
-                    """,
-                ).fetchone()
-                if refresh_candidate:
-                    assigned_row = cur.execute(
+                if candidate_payload is None and refresh_due:
+                    refresh_candidate = cur.execute(
                         """
-                        UPDATE players
-                        SET hero_done=0,
-                            assigned_to='hero',
-                            assigned_at=CURRENT_TIMESTAMP
-                        WHERE steamAccountId=?
-                          AND hero_done=1
+                        SELECT steamAccountId
+                        FROM players
+                        WHERE hero_done=1
                           AND assigned_to IS NULL
-                        RETURNING steamAccountId
+                        ORDER BY COALESCE(hero_refreshed_at, '1970-01-01') ASC,
+                                 steamAccountId ASC
+                        LIMIT 1
                         """,
-                        (refresh_candidate["steamAccountId"],),
                     ).fetchone()
-                    if assigned_row:
-                        task_payload = {
-                            "type": "fetch_hero_stats",
-                            "steamAccountId": int(assigned_row["steamAccountId"]),
-                        }
+                    if refresh_candidate:
+                        assigned_row = cur.execute(
+                            """
+                            UPDATE players
+                            SET hero_done=0,
+                                assigned_to='hero',
+                                assigned_at=CURRENT_TIMESTAMP
+                            WHERE steamAccountId=?
+                              AND hero_done=1
+                              AND assigned_to IS NULL
+                            RETURNING steamAccountId
+                            """,
+                            (refresh_candidate["steamAccountId"],),
+                        ).fetchone()
+                        if assigned_row:
+                            candidate_payload = {
+                                "type": "fetch_hero_stats",
+                                "steamAccountId": int(assigned_row["steamAccountId"]),
+                            }
 
-            if task_payload is None:
-                hero_candidate = cur.execute(
-                    """
-                    SELECT steamAccountId
-                    FROM players
-                    WHERE hero_done=0
-                      AND assigned_to IS NULL
-                    ORDER BY COALESCE(depth, 0) ASC, steamAccountId ASC
-                    LIMIT 1
-                    """,
-                ).fetchone()
-                if hero_candidate:
-                    assigned_row = cur.execute(
+                if candidate_payload is None:
+                    hero_candidate = cur.execute(
                         """
-                        UPDATE players
-                        SET assigned_to='hero',
-                            assigned_at=CURRENT_TIMESTAMP
-                        WHERE steamAccountId=?
-                          AND hero_done=0
+                        SELECT steamAccountId
+                        FROM players
+                        WHERE hero_done=0
                           AND assigned_to IS NULL
-                        RETURNING steamAccountId
+                        ORDER BY COALESCE(depth, 0) ASC, steamAccountId ASC
+                        LIMIT 1
                         """,
-                        (hero_candidate["steamAccountId"],),
                     ).fetchone()
-                    if assigned_row:
-                        task_payload = {
-                            "type": "fetch_hero_stats",
-                            "steamAccountId": int(assigned_row["steamAccountId"]),
-                        }
+                    if hero_candidate:
+                        assigned_row = cur.execute(
+                            """
+                            UPDATE players
+                            SET assigned_to='hero',
+                                assigned_at=CURRENT_TIMESTAMP
+                            WHERE steamAccountId=?
+                              AND hero_done=0
+                              AND assigned_to IS NULL
+                            RETURNING steamAccountId
+                            """,
+                            (hero_candidate["steamAccountId"],),
+                        ).fetchone()
+                        if assigned_row:
+                            candidate_payload = {
+                                "type": "fetch_hero_stats",
+                                "steamAccountId": int(assigned_row["steamAccountId"]),
+                            }
 
-            if task_payload is None:
-                hero_pending = cur.execute(
-                    "SELECT 1 FROM players WHERE hero_done=0 LIMIT 1"
-                ).fetchone()
-                if not hero_pending and not discovery_due:
-                    task_payload = assign_discovery()
+                if candidate_payload is None:
+                    hero_pending = cur.execute(
+                        "SELECT 1 FROM players WHERE hero_done=0 LIMIT 1"
+                    ).fetchone()
+                    if not hero_pending and not discovery_due:
+                        candidate_payload = assign_discovery()
 
-            if task_payload:
-                cur.execute(
-                    """
-                    INSERT INTO meta (key, value)
-                    VALUES (?, ?)
-                    ON CONFLICT(key) DO UPDATE SET value=excluded.value
-                    """,
-                    ("task_assignment_counter", str(next_count)),
-                )
-                if checkpoint_due or should_truncate_wal:
-                    should_checkpoint = True
+                if candidate_payload is not None:
+                    task_payload = candidate_payload
+                    cur.execute(
+                        """
+                        INSERT INTO meta (key, value)
+                        VALUES (?, ?)
+                        ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                        """,
+                        ("task_assignment_counter", str(next_count)),
+                    )
+                    if checkpoint_due or should_truncate_wal:
+                        should_checkpoint = True
+                    break
+
+                if refresh_due or discovery_due:
+                    break
+
+                loop_count = next_count
         if should_checkpoint:
             with db_connection(write=True) as checkpoint_conn:
                 checkpoint_conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
