@@ -33,6 +33,16 @@ def connect() -> sqlite3.Connection:
     return connection
 
 
+def locked_commit(connection: sqlite3.Connection) -> None:
+    with FileLock(LOCK_PATH):
+        connection.commit()
+
+
+def locked_rollback(connection: sqlite3.Connection) -> None:
+    with FileLock(LOCK_PATH):
+        connection.rollback()
+
+
 @contextmanager
 def db_connection(write: bool = False) -> sqlite3.Connection:
     ensure_schema_exists()
@@ -40,10 +50,10 @@ def db_connection(write: bool = False) -> sqlite3.Connection:
     try:
         yield conn
         if write:
-            conn.commit()
+            locked_commit(conn)
     except Exception:
         if write:
-            conn.rollback()
+            locked_rollback(conn)
         raise
     finally:
         conn.close()
@@ -205,6 +215,8 @@ __all__ = [
     "release_incomplete_assignments",
     "locked_execute",
     "locked_executemany",
+    "locked_commit",
+    "locked_rollback",
     "DB_PATH",
     "LOCK_PATH",
     "INITIAL_PLAYER_ID",
