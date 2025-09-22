@@ -1,11 +1,7 @@
-"""Hero metadata for Stratz scraper."""
-
 from typing import Dict, Tuple
 
 
 def hero_slug(name: str) -> str:
-    """Return the canonical slug for a hero name."""
-
     return name.lower().replace(" ", "_")
 
 

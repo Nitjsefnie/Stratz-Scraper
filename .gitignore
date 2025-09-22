@@ -1,5 +1,5 @@
 *
-!**/*.py
 !README.md
-!static/**
-!templates/**
+!stratz_scraper/
+!stratz_scraper/**
+!**/*.py
