@@ -34,9 +34,13 @@ def connect() -> sqlite3.Connection:
 
 
 @contextmanager
-def db_connection(write: bool = False) -> sqlite3.Connection:
+def db_connection(
+    write: bool = False, *, use_file_lock: bool | None = None
+) -> sqlite3.Connection:
     ensure_schema_exists()
-    lock_ctx = FileLock(LOCK_PATH) if write else nullcontext()
+    if use_file_lock is None:
+        use_file_lock = write
+    lock_ctx = FileLock(LOCK_PATH) if use_file_lock else nullcontext()
     with lock_ctx:
         conn = connect()
         try:
@@ -153,7 +157,7 @@ def ensure_indexes(*, lock_acquired: bool = False) -> None:
 def release_incomplete_assignments(max_age_minutes: int = 5, existing: sqlite3.Connection | None = None) -> int:
     age_modifier = f"-{int(max_age_minutes)} minutes"
     if existing is None:
-        with db_connection(write=True) as conn:
+        with db_connection(write=True, use_file_lock=False) as conn:
             cursor = conn.execute(
                 """
                 UPDATE players
