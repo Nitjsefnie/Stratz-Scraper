@@ -10,13 +10,17 @@ DB_PATH = Path("dota.db")
 LOCK_PATH = DB_PATH.with_suffix(".lock")
 INITIAL_PLAYER_ID = 293053907
 
+_INDEXES_ENSURED = False
+
 
 def ensure_schema_exists() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     if DB_PATH.exists():
+        ensure_indexes()
         return
     with FileLock(LOCK_PATH):
         if DB_PATH.exists():
+            ensure_indexes(lock_acquired=True)
             return
         ensure_schema(lock_acquired=True)
 
@@ -100,6 +104,50 @@ def ensure_schema(*, lock_acquired: bool = False) -> None:
                 """,
                 (INITIAL_PLAYER_ID,),
             )
+        ensure_indexes(lock_acquired=True)
+
+
+def ensure_indexes(*, lock_acquired: bool = False) -> None:
+    global _INDEXES_ENSURED
+    if _INDEXES_ENSURED:
+        return
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    lock_ctx = nullcontext() if lock_acquired else FileLock(LOCK_PATH)
+    with lock_ctx:
+        with sqlite3.connect(DB_PATH, timeout=30) as conn:
+            conn.execute("PRAGMA busy_timeout = 5000")
+            conn.executescript(
+                """
+                CREATE INDEX IF NOT EXISTS idx_players_hero_queue
+                    ON players (
+                        hero_done,
+                        assigned_to,
+                        COALESCE(depth, 0),
+                        steamAccountId
+                    );
+                CREATE INDEX IF NOT EXISTS idx_players_hero_refresh
+                    ON players (
+                        hero_done,
+                        assigned_to,
+                        COALESCE(hero_refreshed_at, '1970-01-01'),
+                        steamAccountId
+                    );
+                CREATE INDEX IF NOT EXISTS idx_players_discover_queue
+                    ON players (
+                        hero_done,
+                        discover_done,
+                        assigned_to,
+                        COALESCE(depth, 0),
+                        steamAccountId
+                    );
+                CREATE INDEX IF NOT EXISTS idx_players_assignment_state
+                    ON players (
+                        assigned_to,
+                        assigned_at
+                    );
+                """
+            )
+    _INDEXES_ENSURED = True
 
 
 def release_incomplete_assignments(max_age_minutes: int = 5, existing: sqlite3.Connection | None = None) -> int:
@@ -141,6 +189,7 @@ __all__ = [
     "db_connection",
     "ensure_schema_exists",
     "ensure_schema",
+    "ensure_indexes",
     "release_incomplete_assignments",
     "DB_PATH",
     "LOCK_PATH",
