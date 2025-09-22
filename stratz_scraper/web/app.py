@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from flask import Flask, Response, abort, jsonify, render_template, request
@@ -10,6 +11,9 @@ from ..heroes import HEROES, HERO_SLUGS
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 TEMPLATE_DIR = BASE_DIR / "templates"
+
+ASSIGNMENT_CLEANUP_KEY = "last_assignment_cleanup"
+ASSIGNMENT_CLEANUP_INTERVAL = timedelta(seconds=60)
 
 
 def is_local_request() -> bool:
@@ -48,8 +52,41 @@ def create_app() -> Flask:
         should_checkpoint = False
         with db_connection(write=True) as conn:
             conn.execute("BEGIN IMMEDIATE")
-            release_incomplete_assignments(existing=conn)
             cur = conn.cursor()
+
+            def maybe_release_incomplete_assignments() -> None:
+                now = datetime.now(timezone.utc)
+                last_cleanup_row = cur.execute(
+                    "SELECT value FROM meta WHERE key=?",
+                    (ASSIGNMENT_CLEANUP_KEY,),
+                ).fetchone()
+                should_run_cleanup = True
+                if last_cleanup_row:
+                    try:
+                        last_cleanup = datetime.fromisoformat(
+                            last_cleanup_row["value"]
+                        )
+                    except (TypeError, ValueError):
+                        should_run_cleanup = True
+                    else:
+                        if last_cleanup.tzinfo is None:
+                            last_cleanup = last_cleanup.replace(tzinfo=timezone.utc)
+                        should_run_cleanup = (
+                            now - last_cleanup >= ASSIGNMENT_CLEANUP_INTERVAL
+                        )
+                if not should_run_cleanup:
+                    return
+                release_incomplete_assignments(existing=conn)
+                cur.execute(
+                    """
+                    INSERT INTO meta (key, value)
+                    VALUES (?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                    """,
+                    (ASSIGNMENT_CLEANUP_KEY, now.isoformat()),
+                )
+
+            maybe_release_incomplete_assignments()
 
             def assign_discovery() -> dict | None:
                 candidate = cur.execute(
