@@ -346,9 +346,6 @@ def create_app() -> Flask:
                         """
                         INSERT INTO hero_stats (steamAccountId, heroId, matches, wins)
                         VALUES (?,?,?,?)
-                        ON CONFLICT(steamAccountId, heroId) DO UPDATE SET
-                            matches=excluded.matches,
-                            wins=excluded.wins
                         """,
                         hero_stats_rows,
                     )
