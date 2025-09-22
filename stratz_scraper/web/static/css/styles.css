@@ -180,6 +180,28 @@ body {
   font-weight: 600;
 }
 
+.token-log-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.token-log {
+  margin: 0;
+  min-height: 80px;
+  max-height: 160px;
+  overflow: auto;
+  background: rgba(15, 23, 42, 0.85);
+  color: #e6edf3;
+  padding: 12px;
+  border-radius: 10px;
+  font-family: "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  white-space: pre-wrap;
+}
+
 .token-row-running {
   border-color: rgba(31, 120, 255, 0.45);
   box-shadow: 0 0 0 1px rgba(31, 120, 255, 0.18);
@@ -204,6 +226,11 @@ body {
   .token-row button.remove {
     background: rgba(239, 68, 68, 0.2);
     color: #fca5a5;
+  }
+
+  .token-log {
+    background: rgba(15, 23, 42, 0.65);
+    box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.2);
   }
 }
 
