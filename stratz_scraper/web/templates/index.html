@@ -26,7 +26,14 @@
           storage.
         </p>
         <div id="tokenList" class="token-list" aria-live="polite"></div>
-        <button id="addToken" type="button" class="secondary">Add token</button>
+        <div class="token-controls">
+          <button id="addToken" type="button" class="secondary">Add token</button>
+          <div class="token-control-group">
+            <button id="exportTokens" type="button" class="secondary">Export all</button>
+            <button id="importTokens" type="button" class="secondary">Import all</button>
+          </div>
+          <input id="importTokensFile" type="file" accept="application/json" hidden>
+        </div>
       </section>
 
       <section class="card control-panel">

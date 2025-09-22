@@ -8,6 +8,9 @@ const state = {
 const elements = {
   tokenList: document.getElementById("tokenList"),
   addToken: document.getElementById("addToken"),
+  exportTokens: document.getElementById("exportTokens"),
+  importTokens: document.getElementById("importTokens"),
+  importTokensFile: document.getElementById("importTokensFile"),
   begin: document.getElementById("begin"),
   stop: document.getElementById("stop"),
   progress: document.getElementById("progress"),
@@ -186,12 +189,7 @@ async function executeStratzQueryWithTokens(query, variables, tokens, startIndex
 }
 
 function persistTokens() {
-  const payload = state.tokens
-    .map((token) => ({
-      token: token.value.trim(),
-      maxRequests: parseMaxRequests(token.maxRequests),
-    }))
-    .filter((entry) => entry.token.length > 0);
+  const payload = getPersistableTokens();
 
   if (!payload.length) {
     try {
@@ -211,6 +209,143 @@ function persistTokens() {
   }
   clearCookie("stratz_tokens");
   clearCookie("stratz_token");
+}
+
+function getPersistableTokens() {
+  return state.tokens
+    .map((token) => ({
+      token: token.value.trim(),
+      maxRequests: parseMaxRequests(token.maxRequests),
+    }))
+    .filter((entry) => entry.token.length > 0);
+}
+
+function downloadTokens() {
+  const payload = getPersistableTokens();
+  if (!payload.length) {
+    alert("There are no tokens to export.");
+    return;
+  }
+
+  const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], {
+    type: "application/json",
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  anchor.href = url;
+  anchor.download = `stratz-tokens-${timestamp}.json`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
+  log(`Exported ${payload.length} token${payload.length === 1 ? "" : "s"}.`);
+}
+
+function normaliseImportedTokens(data) {
+  if (!Array.isArray(data)) {
+    throw new Error("Invalid token export format: expected an array.");
+  }
+  const normalised = [];
+  const seen = new Set();
+
+  data.forEach((entry) => {
+    let tokenValue = "";
+    let maxRaw = null;
+
+    if (typeof entry === "string") {
+      tokenValue = entry;
+    } else if (entry && typeof entry === "object") {
+      if (typeof entry.token === "string") {
+        tokenValue = entry.token;
+      } else if (typeof entry.value === "string") {
+        tokenValue = entry.value;
+      }
+      if ("maxRequests" in entry) {
+        maxRaw = entry.maxRequests;
+      } else if ("maxRequest" in entry) {
+        maxRaw = entry.maxRequest;
+      } else if ("max" in entry) {
+        maxRaw = entry.max;
+      }
+    }
+
+    const trimmedToken = tokenValue.trim();
+    if (!trimmedToken || seen.has(trimmedToken)) {
+      return;
+    }
+    seen.add(trimmedToken);
+
+    let maxValue = "";
+    if (typeof maxRaw === "number") {
+      if (Number.isFinite(maxRaw) && maxRaw > 0) {
+        maxValue = String(Math.floor(maxRaw));
+      }
+    } else if (typeof maxRaw === "string") {
+      const trimmedMax = maxRaw.trim();
+      if (trimmedMax) {
+        const parsed = parseInt(trimmedMax, 10);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          maxValue = String(parsed);
+        } else {
+          maxValue = trimmedMax;
+        }
+      }
+    }
+
+    normalised.push({ value: trimmedToken, maxRequests: maxValue });
+  });
+
+  if (!normalised.length) {
+    throw new Error("No valid tokens found in import file.");
+  }
+
+  return normalised;
+}
+
+function replaceTokens(newTokens) {
+  state.tokens.splice(0, state.tokens.length);
+  state.tokenCounter = 0;
+  newTokens.forEach((entry) => {
+    addTokenRow({ value: entry.value, maxRequests: entry.maxRequests }, { skipPersist: true });
+  });
+  if (!newTokens.length) {
+    renderTokens();
+  }
+  persistTokens();
+  updateRunningState();
+  log(`Imported ${newTokens.length} token${newTokens.length === 1 ? "" : "s"}.`);
+}
+
+function handleImportFile(file) {
+  if (!file) {
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const text = typeof reader.result === "string" ? reader.result : "";
+      const parsed = JSON.parse(text);
+      const tokens = normaliseImportedTokens(parsed);
+      replaceTokens(tokens);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      alert(`Failed to import tokens: ${message}`);
+      log(`Token import failed: ${message}`);
+    } finally {
+      if (elements.importTokensFile) {
+        elements.importTokensFile.value = "";
+      }
+    }
+  };
+  reader.onerror = () => {
+    alert("Failed to read the selected file.");
+    log("Token import failed: unable to read file.");
+    if (elements.importTokensFile) {
+      elements.importTokensFile.value = "";
+    }
+  };
+  reader.readAsText(file);
 }
 
 function getTokenLabel(token) {
@@ -916,6 +1051,38 @@ function initialise() {
 if (elements.addToken) {
   elements.addToken.addEventListener("click", () => {
     addTokenRow();
+  });
+}
+
+if (elements.exportTokens) {
+  elements.exportTokens.addEventListener("click", () => {
+    try {
+      downloadTokens();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log(`Token export failed: ${message}`);
+    }
+  });
+}
+
+if (elements.importTokens) {
+  elements.importTokens.addEventListener("click", () => {
+    if (state.running) {
+      alert("Stop all active tokens before importing.");
+      return;
+    }
+    if (elements.importTokensFile) {
+      elements.importTokensFile.click();
+    }
+  });
+}
+
+if (elements.importTokensFile) {
+  elements.importTokensFile.addEventListener("change", (event) => {
+    const target = event.target;
+    const files = target?.files;
+    const file = files && files.length > 0 ? files[0] : null;
+    handleImportFile(file);
   });
 }
 
