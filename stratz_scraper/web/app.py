@@ -4,12 +4,7 @@ from pathlib import Path
 
 from flask import Flask, Response, abort, jsonify, render_template, request
 
-from ..database import (
-    db_connection,
-    ensure_hero_refresh_column,
-    release_incomplete_assignments,
-    reset_hero_refresh_once,
-)
+from ..database import db_connection, release_incomplete_assignments
 from ..heroes import HEROES, HERO_SLUGS
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -41,8 +36,6 @@ def create_app() -> Flask:
         template_folder=str(TEMPLATE_DIR),
     )
 
-    ensure_hero_refresh_column()
-    reset_hero_refresh_once()
     release_incomplete_assignments()
 
     @app.get("/")
