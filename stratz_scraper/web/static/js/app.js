@@ -812,15 +812,19 @@ async function submitHeroStats(playerId, heroes) {
   }
 }
 
-async function submitDiscovery(playerId, discovered) {
+async function submitDiscovery(playerId, discovered, depth) {
+  const payload = {
+    type: "discover_matches",
+    steamAccountId: playerId,
+    discovered,
+  };
+  if (Number.isFinite(depth)) {
+    payload.depth = depth;
+  }
   const response = await fetch("/submit", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      type: "discover_matches",
-      steamAccountId: playerId,
-      discovered,
-    }),
+    body: JSON.stringify(payload),
   });
   if (!response.ok) {
     throw new Error(`Submit failed with status ${response.status}`);
@@ -948,7 +952,7 @@ async function workLoopForToken(token) {
           token,
           `Discovered ${discovered.length} accounts from ${taskId}.`,
         );
-        await submitDiscovery(taskId, discovered);
+        await submitDiscovery(taskId, discovered, task.depth);
         logToken(token, `Submitted discovery results for ${taskId}.`);
       } else {
         logToken(
