@@ -3,3 +3,4 @@
 !stratz_scraper/
 !stratz_scraper/**
 !**/*.py
+**/__pycache__

@@ -79,7 +79,7 @@ def create_app() -> Flask:
     def task():
         task_payload = None
         should_checkpoint = False
-        with db_connection(write=True, use_file_lock=False) as conn:
+        with db_connection(write=True) as conn:
             cleanup_ran = maybe_run_assignment_cleanup(conn)
             if cleanup_ran:
                 conn.commit()
@@ -336,7 +336,7 @@ def create_app() -> Flask:
 
             with db_connection(write=True) as conn:
                 cur = conn.cursor()
-                cur.execute("BEGIN")
+                cur.execute("BEGIN IMMEDIATE")
                 cur.execute(
                     "DELETE FROM hero_stats WHERE steamAccountId = ?",
                     (steam_account_id,),

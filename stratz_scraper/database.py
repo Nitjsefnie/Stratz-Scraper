@@ -27,8 +27,8 @@ def ensure_schema_exists() -> None:
 
 def connect() -> sqlite3.Connection:
     ensure_schema_exists()
-    connection = sqlite3.connect(DB_PATH, timeout=30)
-    connection.execute("PRAGMA busy_timeout = 5000")
+    connection = sqlite3.connect(DB_PATH, timeout=20)
+    connection.execute("PRAGMA busy_timeout = 20000")
     connection.row_factory = sqlite3.Row
     return connection
 
