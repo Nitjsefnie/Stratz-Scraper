@@ -16,6 +16,35 @@ ASSIGNMENT_CLEANUP_KEY = "last_assignment_cleanup"
 ASSIGNMENT_CLEANUP_INTERVAL = timedelta(seconds=60)
 
 
+def maybe_run_assignment_cleanup(conn) -> bool:
+    cur = conn.cursor()
+    now = datetime.now(timezone.utc)
+    last_cleanup_row = cur.execute(
+        "SELECT value FROM meta WHERE key=?",
+        (ASSIGNMENT_CLEANUP_KEY,),
+    ).fetchone()
+    if last_cleanup_row:
+        try:
+            last_cleanup = datetime.fromisoformat(last_cleanup_row["value"])
+        except (TypeError, ValueError):
+            pass
+        else:
+            if last_cleanup.tzinfo is None:
+                last_cleanup = last_cleanup.replace(tzinfo=timezone.utc)
+            if now - last_cleanup < ASSIGNMENT_CLEANUP_INTERVAL:
+                return False
+    release_incomplete_assignments(existing=conn)
+    cur.execute(
+        """
+        INSERT INTO meta (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value
+        """,
+        (ASSIGNMENT_CLEANUP_KEY, now.isoformat()),
+    )
+    return True
+
+
 def is_local_request() -> bool:
     local_hosts = {"127.0.0.1", "::1"}
     remote_addr = (request.remote_addr or "").strip()
@@ -50,43 +79,12 @@ def create_app() -> Flask:
     def task():
         task_payload = None
         should_checkpoint = False
-        with db_connection(write=True) as conn:
+        with db_connection(write=True, use_file_lock=False) as conn:
+            cleanup_ran = maybe_run_assignment_cleanup(conn)
+            if cleanup_ran:
+                conn.commit()
             conn.execute("BEGIN IMMEDIATE")
             cur = conn.cursor()
-
-            def maybe_release_incomplete_assignments() -> None:
-                now = datetime.now(timezone.utc)
-                last_cleanup_row = cur.execute(
-                    "SELECT value FROM meta WHERE key=?",
-                    (ASSIGNMENT_CLEANUP_KEY,),
-                ).fetchone()
-                should_run_cleanup = True
-                if last_cleanup_row:
-                    try:
-                        last_cleanup = datetime.fromisoformat(
-                            last_cleanup_row["value"]
-                        )
-                    except (TypeError, ValueError):
-                        should_run_cleanup = True
-                    else:
-                        if last_cleanup.tzinfo is None:
-                            last_cleanup = last_cleanup.replace(tzinfo=timezone.utc)
-                        should_run_cleanup = (
-                            now - last_cleanup >= ASSIGNMENT_CLEANUP_INTERVAL
-                        )
-                if not should_run_cleanup:
-                    return
-                release_incomplete_assignments(existing=conn)
-                cur.execute(
-                    """
-                    INSERT INTO meta (key, value)
-                    VALUES (?, ?)
-                    ON CONFLICT(key) DO UPDATE SET value=excluded.value
-                    """,
-                    (ASSIGNMENT_CLEANUP_KEY, now.isoformat()),
-                )
-
-            maybe_release_incomplete_assignments()
 
             def assign_discovery() -> dict | None:
                 assigned = cur.execute(
@@ -233,7 +231,7 @@ def create_app() -> Flask:
 
                 loop_count = next_count
         if should_checkpoint:
-            with db_connection(write=True) as checkpoint_conn:
+            with db_connection(write=True, use_file_lock=False) as checkpoint_conn:
                 checkpoint_conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
         return jsonify({"task": task_payload})
 
