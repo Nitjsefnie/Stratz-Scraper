@@ -5,6 +5,8 @@ const state = {
   tokens: [],
 };
 
+const TOKEN_LOG_MAX_ENTRIES = 200;
+
 const elements = {
   tokenList: document.getElementById("tokenList"),
   addToken: document.getElementById("addToken"),
@@ -43,13 +45,22 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function appendLogLine(element, line, {
+  maxLength = 50_000,
+  retainLength = 40_000,
+} = {}) {
+  if (!element) return;
+
+  element.textContent += `${line}\n`;
+  if (element.textContent.length > maxLength) {
+    element.textContent = element.textContent.slice(-retainLength);
+  }
+  element.scrollTop = element.scrollHeight;
+}
+
 function log(message) {
   const timestamp = new Date().toLocaleTimeString();
-  elements.log.textContent += `[${timestamp}] ${message}\n`;
-  if (elements.log.textContent.length > 50_000) {
-    elements.log.textContent = elements.log.textContent.slice(-40_000);
-  }
-  elements.log.scrollTop = elements.log.scrollHeight;
+  appendLogLine(elements.log, `[${timestamp}] ${message}`);
 }
 
 function formatDuration(ms) {
@@ -353,6 +364,31 @@ function getTokenLabel(token) {
   return index >= 0 ? index + 1 : token.id;
 }
 
+function logToken(token, message) {
+  const timestamp = new Date().toLocaleTimeString();
+  const prefix = `Token #${getTokenLabel(token)}: ${message}`;
+  appendLogLine(elements.log, `[${timestamp}] ${prefix}`);
+
+  if (!token) {
+    return;
+  }
+
+  if (!Array.isArray(token.logEntries)) {
+    token.logEntries = [];
+  }
+
+  const entry = `[${timestamp}] ${message}`;
+  token.logEntries.push(entry);
+  if (token.logEntries.length > TOKEN_LOG_MAX_ENTRIES) {
+    token.logEntries.splice(0, token.logEntries.length - TOKEN_LOG_MAX_ENTRIES);
+  }
+
+  if (token.dom?.log) {
+    token.dom.log.textContent = token.logEntries.join("\n");
+    token.dom.log.scrollTop = token.dom.log.scrollHeight;
+  }
+}
+
 function updateTokenDisplay(token) {
   if (!token?.dom) return;
 
@@ -431,11 +467,8 @@ function startToken(token) {
     return;
   }
   workLoopForToken(token).catch((error) => {
-    log(
-      `Token #${getTokenLabel(token)}: failed to start worker: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
+    const message = error instanceof Error ? error.message : String(error);
+    logToken(token, `Failed to start worker: ${message}`);
   });
 }
 
@@ -447,7 +480,7 @@ function requestStopForToken(token, { silent = false } = {}) {
   updateTokenDisplay(token);
   updateButtons();
   if (!silent) {
-    log(`Token #${getTokenLabel(token)}: stop requested.`);
+    logToken(token, "Stop requested.");
   }
 }
 
@@ -467,6 +500,7 @@ function addTokenRow(initial = {}, options = {}) {
     activeToken: null,
     stopRequested: false,
     dom: null,
+    logEntries: [],
   };
   state.tokens.push(token);
   renderTokens();
@@ -588,7 +622,23 @@ function renderTokens() {
 
     meta.append(statusItem.container, backoffItem.container, requestsItem.container);
 
-    row.append(topRow, meta);
+    const logContainer = document.createElement("div");
+    logContainer.className = "token-log-container";
+
+    const logLabel = document.createElement("span");
+    logLabel.className = "label token-log-label";
+    logLabel.textContent = "Activity";
+
+    const logView = document.createElement("pre");
+    logView.className = "token-log";
+    logView.setAttribute("aria-live", "polite");
+    const existingEntries = Array.isArray(token.logEntries) ? token.logEntries : [];
+    logView.textContent = existingEntries.join("\n");
+    logView.scrollTop = logView.scrollHeight;
+
+    logContainer.append(logLabel, logView);
+
+    row.append(topRow, meta, logContainer);
     elements.tokenList.appendChild(row);
 
     token.dom = {
@@ -601,6 +651,7 @@ function renderTokens() {
       statusValue: statusItem.valueEl,
       backoffValue: backoffItem.valueEl,
       requestsValue: requestsItem.valueEl,
+      log: logView,
     };
 
     updateTokenDisplay(token);
@@ -848,7 +899,6 @@ async function seedRange() {
 }
 
 async function workLoopForToken(token) {
-  const label = getTokenLabel(token);
   token.running = true;
   token.stopRequested = false;
   token.activeToken = token.value.trim();
@@ -856,9 +906,9 @@ async function workLoopForToken(token) {
   token.requestsRemaining = parseMaxRequests(token.maxRequests);
   updateTokenDisplay(token);
   updateRunningState();
-  log(`Token #${label}: worker started.`);
+  logToken(token, "Worker started.");
   if (typeof token.requestsRemaining === "number") {
-    log(`Token #${label}: request limit ${token.requestsRemaining}.`);
+    logToken(token, `Request limit ${token.requestsRemaining}.`);
   }
 
   while (!token.stopRequested) {
@@ -867,9 +917,7 @@ async function workLoopForToken(token) {
       task = await getTask();
       if (!task) {
         const wait = 60_000;
-        log(
-          `Token #${label}: no tasks available. Waiting 60 seconds before retrying.`,
-        );
+        logToken(token, "No tasks available. Waiting 60 seconds before retrying.");
         token.backoff = wait;
         updateBackoffDisplay();
         updateTokenDisplay(token);
@@ -885,24 +933,27 @@ async function workLoopForToken(token) {
       }
       const taskId = task.steamAccountId;
       if (task.type === "fetch_hero_stats") {
-        log(`Token #${label}: hero stats task for ${taskId}.`);
+        logToken(token, `Hero stats task for ${taskId}.`);
         const heroes = await fetchPlayerHeroes(taskId, token.activeToken);
-        log(`Token #${label}: fetched ${heroes.length} heroes for ${taskId}.`);
+        logToken(token, `Fetched ${heroes.length} heroes for ${taskId}.`);
         await submitHeroStats(taskId, heroes);
-        log(`Token #${label}: submitted ${heroes.length} heroes for ${taskId}.`);
+        logToken(token, `Submitted ${heroes.length} heroes for ${taskId}.`);
       } else if (task.type === "discover_matches") {
-        log(
-          `Token #${label}: discovery task for ${taskId} (depth ${task.depth ?? 0}).`,
+        logToken(
+          token,
+          `Discovery task for ${taskId} (depth ${task.depth ?? 0}).`,
         );
         const discovered = await discoverMatches(taskId, token.activeToken);
-        log(
-          `Token #${label}: discovered ${discovered.length} accounts from ${taskId}.`,
+        logToken(
+          token,
+          `Discovered ${discovered.length} accounts from ${taskId}.`,
         );
         await submitDiscovery(taskId, discovered);
-        log(`Token #${label}: submitted discovery results for ${taskId}.`);
+        logToken(token, `Submitted discovery results for ${taskId}.`);
       } else {
-        log(
-          `Token #${label}: received unknown task type ${task.type}. Resetting task ${taskId}.`,
+        logToken(
+          token,
+          `Received unknown task type ${task.type}. Resetting task ${taskId}.`,
         );
         await resetTask(task).catch(() => {});
         break;
@@ -913,7 +964,7 @@ async function workLoopForToken(token) {
         updateRequestsRemainingDisplay();
         updateTokenDisplay(token);
         if (token.requestsRemaining === 0) {
-          log(`Token #${label}: reached request limit. Stopping worker.`);
+          logToken(token, "Reached request limit. Stopping worker.");
           break;
         }
       }
@@ -924,17 +975,18 @@ async function workLoopForToken(token) {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const activeId = task?.steamAccountId;
-      log(`Token #${label}: error${activeId ? ` for ${activeId}` : ""}: ${message}`);
+      logToken(token, `Error${activeId ? ` for ${activeId}` : ""}: ${message}`);
       showErrorStatus("Retrying");
       if (task) {
         try {
           await resetTask(task);
-          log(`Token #${label}: reset task ${task.steamAccountId}.`);
+          logToken(token, `Reset task ${task.steamAccountId}.`);
         } catch (resetError) {
           const resetMessage =
             resetError instanceof Error ? resetError.message : String(resetError);
-          log(
-            `Token #${label}: failed to reset ${task?.steamAccountId ?? "?"}: ${resetMessage}`,
+          logToken(
+            token,
+            `Failed to reset ${task?.steamAccountId ?? "?"}: ${resetMessage}`,
           );
         }
       }
@@ -965,7 +1017,7 @@ async function workLoopForToken(token) {
   token.stopRequested = false;
   token.requestsRemaining = parseMaxRequests(token.maxRequests);
   updateTokenDisplay(token);
-  log(`Token #${label}: worker stopped.`);
+  logToken(token, "Worker stopped.");
   updateRunningState();
 }
 
