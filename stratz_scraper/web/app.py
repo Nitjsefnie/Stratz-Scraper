@@ -5,7 +5,12 @@ from pathlib import Path
 
 from flask import Flask, Response, abort, jsonify, render_template, request
 
-from ..database import db_connection, release_incomplete_assignments
+from ..database import (
+    db_connection,
+    locked_execute,
+    locked_executemany,
+    release_incomplete_assignments,
+)
 from ..heroes import HEROES, HERO_SLUGS
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -34,7 +39,8 @@ def maybe_run_assignment_cleanup(conn) -> bool:
             if now - last_cleanup < ASSIGNMENT_CLEANUP_INTERVAL:
                 return False
     release_incomplete_assignments(existing=conn)
-    cur.execute(
+    locked_execute(
+        cur,
         """
         INSERT INTO meta (key, value)
         VALUES (?, ?)
@@ -83,11 +89,11 @@ def create_app() -> Flask:
             cleanup_ran = maybe_run_assignment_cleanup(conn)
             if cleanup_ran:
                 conn.commit()
-            conn.execute("BEGIN IMMEDIATE")
             cur = conn.cursor()
 
             def assign_discovery() -> dict | None:
-                assigned = cur.execute(
+                assigned = locked_execute(
+                    cur,
                     """
                     WITH candidate AS (
                         SELECT steamAccountId, depth
@@ -107,7 +113,8 @@ def create_app() -> Flask:
                     """,
                 ).fetchone()
                 if not assigned:
-                    assigned = cur.execute(
+                    assigned = locked_execute(
+                        cur,
                         """
                         WITH candidate AS (
                             SELECT steamAccountId, depth
@@ -136,7 +143,8 @@ def create_app() -> Flask:
                 }
 
             def restart_discovery_cycle() -> bool:
-                cur.execute(
+                locked_execute(
+                    cur,
                     """
                     UPDATE players
                     SET discover_done=0,
@@ -172,7 +180,8 @@ def create_app() -> Flask:
                         candidate_payload = assign_discovery()
 
                 if candidate_payload is None and refresh_due:
-                    assigned_row = cur.execute(
+                    assigned_row = locked_execute(
+                        cur,
                         """
                         WITH candidate AS (
                             SELECT steamAccountId
@@ -200,7 +209,8 @@ def create_app() -> Flask:
                         }
 
                 if candidate_payload is None:
-                    assigned_row = cur.execute(
+                    assigned_row = locked_execute(
+                        cur,
                         """
                         WITH candidate AS (
                             SELECT steamAccountId
@@ -234,7 +244,8 @@ def create_app() -> Flask:
 
                 if candidate_payload is not None:
                     task_payload = candidate_payload
-                    cur.execute(
+                    locked_execute(
+                        cur,
                         """
                         INSERT INTO meta (key, value)
                         VALUES (?, ?)
@@ -251,8 +262,11 @@ def create_app() -> Flask:
 
                 loop_count = next_count
         if should_checkpoint:
-            with db_connection(write=True, use_file_lock=False) as checkpoint_conn:
-                checkpoint_conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            with db_connection(write=True) as checkpoint_conn:
+                locked_execute(
+                    checkpoint_conn,
+                    "PRAGMA wal_checkpoint(TRUNCATE);",
+                )
         return jsonify({"task": task_payload})
 
     @app.post("/task/reset")
@@ -271,7 +285,8 @@ def create_app() -> Flask:
                     (steam_account_id,),
                 ).fetchone()
                 hero_done_value = 1 if has_existing_stats else 0
-                cur.execute(
+                locked_execute(
+                    cur,
                     """
                     UPDATE players
                     SET hero_done=?,
@@ -283,7 +298,8 @@ def create_app() -> Flask:
                     (hero_done_value, hero_done_value, steam_account_id),
                 )
             elif task_type == "discover_matches":
-                cur.execute(
+                locked_execute(
+                    cur,
                     """
                     UPDATE players
                     SET discover_done=0,
@@ -294,7 +310,8 @@ def create_app() -> Flask:
                     (steam_account_id,),
                 )
             else:
-                cur.execute(
+                locked_execute(
+                    cur,
                     """
                     UPDATE players
                     SET assigned_to=NULL,
@@ -336,13 +353,14 @@ def create_app() -> Flask:
 
             with db_connection(write=True) as conn:
                 cur = conn.cursor()
-                cur.execute("BEGIN IMMEDIATE")
-                cur.execute(
+                locked_execute(
+                    cur,
                     "DELETE FROM hero_stats WHERE steamAccountId = ?",
                     (steam_account_id,),
                 )
                 if hero_stats_rows:
-                    cur.executemany(
+                    locked_executemany(
+                        cur,
                         """
                         INSERT INTO hero_stats (steamAccountId, heroId, matches, wins)
                         VALUES (?,?,?,?)
@@ -350,7 +368,8 @@ def create_app() -> Flask:
                         hero_stats_rows,
                     )
                 if best_rows:
-                    cur.executemany(
+                    locked_executemany(
+                        cur,
                         """
                         INSERT INTO best (hero_id, hero_name, player_id, matches, wins)
                         VALUES (?,?,?,?,?)
@@ -362,7 +381,8 @@ def create_app() -> Flask:
                         """,
                         best_rows,
                     )
-                cur.execute(
+                locked_execute(
+                    cur,
                     """
                     UPDATE players
                     SET hero_done=1,
@@ -426,7 +446,8 @@ def create_app() -> Flask:
                     if new_id != steam_account_id
                 ]
                 if child_rows:
-                    cur.executemany(
+                    locked_executemany(
+                        cur,
                         """
                         INSERT INTO players (
                             steamAccountId,
@@ -440,7 +461,8 @@ def create_app() -> Flask:
                         """,
                         child_rows,
                     )
-                cur.execute(
+                locked_execute(
+                    cur,
                     """
                     UPDATE players
                     SET discover_done=1,
@@ -488,9 +510,9 @@ def create_app() -> Flask:
             return Response("End must be >= start", status=400)
         with db_connection(write=True) as conn:
             cur = conn.cursor()
-            cur.execute("BEGIN")
             for pid in range(start, end + 1):
-                cur.execute(
+                locked_execute(
+                    cur,
                     """
                     INSERT OR IGNORE INTO players (
                         steamAccountId,

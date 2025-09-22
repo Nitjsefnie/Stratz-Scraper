@@ -34,25 +34,31 @@ def connect() -> sqlite3.Connection:
 
 
 @contextmanager
-def db_connection(
-    write: bool = False, *, use_file_lock: bool | None = None
-) -> sqlite3.Connection:
+def db_connection(write: bool = False) -> sqlite3.Connection:
     ensure_schema_exists()
-    if use_file_lock is None:
-        use_file_lock = write
-    lock_ctx = FileLock(LOCK_PATH) if use_file_lock else nullcontext()
-    with lock_ctx:
-        conn = connect()
-        try:
-            yield conn
-            if write:
-                conn.commit()
-        except Exception:
-            if write:
-                conn.rollback()
-            raise
-        finally:
-            conn.close()
+    conn = connect()
+    try:
+        yield conn
+        if write:
+            conn.commit()
+    except Exception:
+        if write:
+            conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def locked_execute(target: sqlite3.Connection | sqlite3.Cursor, sql: str, parameters=()):
+    with FileLock(LOCK_PATH):
+        return target.execute(sql, parameters)
+
+
+def locked_executemany(
+    target: sqlite3.Connection | sqlite3.Cursor, sql: str, seq_of_parameters
+):
+    with FileLock(LOCK_PATH):
+        return target.executemany(sql, seq_of_parameters)
 
 
 def ensure_schema(*, lock_acquired: bool = False) -> None:
@@ -157,8 +163,9 @@ def ensure_indexes(*, lock_acquired: bool = False) -> None:
 def release_incomplete_assignments(max_age_minutes: int = 5, existing: sqlite3.Connection | None = None) -> int:
     age_modifier = f"-{int(max_age_minutes)} minutes"
     if existing is None:
-        with db_connection(write=True, use_file_lock=False) as conn:
-            cursor = conn.execute(
+        with db_connection(write=True) as conn:
+            cursor = locked_execute(
+                conn,
                 """
                 UPDATE players
                 SET assigned_to=NULL,
@@ -172,7 +179,8 @@ def release_incomplete_assignments(max_age_minutes: int = 5, existing: sqlite3.C
                 (age_modifier,),
             )
             return cursor.rowcount if cursor.rowcount is not None else 0
-    cursor = existing.execute(
+    cursor = locked_execute(
+        existing,
         """
         UPDATE players
         SET assigned_to=NULL,
@@ -195,6 +203,8 @@ __all__ = [
     "ensure_schema",
     "ensure_indexes",
     "release_incomplete_assignments",
+    "locked_execute",
+    "locked_executemany",
     "DB_PATH",
     "LOCK_PATH",
     "INITIAL_PLAYER_ID",
