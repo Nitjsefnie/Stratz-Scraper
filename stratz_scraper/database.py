@@ -27,20 +27,10 @@ def ensure_schema_exists() -> None:
 
 def connect() -> sqlite3.Connection:
     ensure_schema_exists()
-    connection = sqlite3.connect(DB_PATH, timeout=20)
+    connection = sqlite3.connect(DB_PATH, timeout=20, isolation_level=None)
     connection.execute("PRAGMA busy_timeout = 20000")
     connection.row_factory = sqlite3.Row
     return connection
-
-
-def locked_commit(connection: sqlite3.Connection) -> None:
-    with FileLock(LOCK_PATH):
-        connection.commit()
-
-
-def locked_rollback(connection: sqlite3.Connection) -> None:
-    with FileLock(LOCK_PATH):
-        connection.rollback()
 
 
 @contextmanager
@@ -49,12 +39,6 @@ def db_connection(write: bool = False) -> sqlite3.Connection:
     conn = connect()
     try:
         yield conn
-        if write:
-            locked_commit(conn)
-    except Exception:
-        if write:
-            locked_rollback(conn)
-        raise
     finally:
         conn.close()
 
@@ -75,7 +59,7 @@ def ensure_schema(*, lock_acquired: bool = False) -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     lock_ctx = nullcontext() if lock_acquired else FileLock(LOCK_PATH)
     with lock_ctx:
-        with sqlite3.connect(DB_PATH, timeout=30) as conn:
+        with sqlite3.connect(DB_PATH, timeout=30, isolation_level=None) as conn:
             conn.execute("PRAGMA busy_timeout = 5000")
             conn.execute("PRAGMA journal_mode=WAL;")
             conn.executescript(
@@ -134,7 +118,7 @@ def ensure_indexes(*, lock_acquired: bool = False) -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     lock_ctx = nullcontext() if lock_acquired else FileLock(LOCK_PATH)
     with lock_ctx:
-        with sqlite3.connect(DB_PATH, timeout=30) as conn:
+        with sqlite3.connect(DB_PATH, timeout=30, isolation_level=None) as conn:
             conn.execute("PRAGMA busy_timeout = 5000")
             conn.executescript(
                 """
@@ -215,8 +199,6 @@ __all__ = [
     "release_incomplete_assignments",
     "locked_execute",
     "locked_executemany",
-    "locked_commit",
-    "locked_rollback",
     "DB_PATH",
     "LOCK_PATH",
     "INITIAL_PLAYER_ID",
