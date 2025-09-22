@@ -135,37 +135,12 @@ def release_incomplete_assignments(max_age_minutes: int = 5, existing: sqlite3.C
     return cursor.rowcount if cursor.rowcount is not None else 0
 
 
-def ensure_hero_refresh_column() -> None:
-    with db_connection(write=True) as conn:
-        columns = conn.execute("PRAGMA table_info(players)").fetchall()
-        if not any(column[1] == "hero_refreshed_at" for column in columns):
-            conn.execute("ALTER TABLE players ADD COLUMN hero_refreshed_at DATETIME")
-
-
-def reset_hero_refresh_once() -> None:
-    with db_connection(write=True) as conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-        conn.execute("BEGIN")
-        reset_marker = conn.execute(
-            "SELECT value FROM meta WHERE key=?",
-            ("hero_refresh_reset_done",),
-        ).fetchone()
-        if reset_marker is None:
-            conn.execute("UPDATE players SET hero_refreshed_at=NULL")
-            conn.execute(
-                "INSERT INTO meta (key, value) VALUES (?, ?)",
-                ("hero_refresh_reset_done", "1"),
-            )
-
-
 __all__ = [
     "connect",
     "db_connection",
     "ensure_schema_exists",
     "ensure_schema",
     "release_incomplete_assignments",
-    "ensure_hero_refresh_column",
-    "reset_hero_refresh_once",
     "DB_PATH",
     "LOCK_PATH",
     "INITIAL_PLAYER_ID",
