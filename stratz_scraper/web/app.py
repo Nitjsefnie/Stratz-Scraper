@@ -7,6 +7,7 @@ from flask import Flask, Response, abort, jsonify, render_template, request
 
 from ..database import (
     db_connection,
+    locked_commit,
     locked_execute,
     locked_executemany,
     release_incomplete_assignments,
@@ -88,7 +89,7 @@ def create_app() -> Flask:
         with db_connection(write=True) as conn:
             cleanup_ran = maybe_run_assignment_cleanup(conn)
             if cleanup_ran:
-                conn.commit()
+                locked_commit(conn)
             cur = conn.cursor()
 
             def assign_discovery() -> dict | None:
