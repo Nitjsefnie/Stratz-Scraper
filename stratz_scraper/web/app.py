@@ -382,29 +382,54 @@ def create_app() -> Flask:
                 steam_account_id = int(data["steamAccountId"])
             except (KeyError, TypeError, ValueError):
                 return jsonify({"status": "error", "message": "steamAccountId is required"}), 400
-            discovered_ids = set()
+            discovered_ids: list[int] = []
+            seen_ids: set[int] = set()
             for value in data.get("discovered", []):
                 try:
-                    discovered_ids.add(int(value))
+                    candidate_id = int(value)
                 except (TypeError, ValueError):
                     continue
+                if candidate_id in seen_ids:
+                    continue
+                seen_ids.add(candidate_id)
+                discovered_ids.append(candidate_id)
             with db_connection(write=True) as conn:
                 cur = conn.cursor()
                 cur.execute("BEGIN")
-                parent_row = cur.execute(
-                    "SELECT depth FROM players WHERE steamAccountId=?",
-                    (steam_account_id,),
-                ).fetchone()
-                parent_depth = (
-                    int(parent_row["depth"])
-                    if parent_row and parent_row["depth"] is not None
-                    else 0
-                )
-                next_depth = parent_depth + 1
-                for new_id in discovered_ids:
-                    if new_id == steam_account_id:
-                        continue
-                    cur.execute(
+                next_depth_value = None
+                provided_next_depth = data.get("nextDepth")
+                if provided_next_depth is not None:
+                    try:
+                        next_depth_value = int(provided_next_depth)
+                    except (TypeError, ValueError):
+                        next_depth_value = None
+                if next_depth_value is None:
+                    provided_depth = data.get("depth")
+                    parent_depth_value = None
+                    if provided_depth is not None:
+                        try:
+                            parent_depth_value = int(provided_depth)
+                        except (TypeError, ValueError):
+                            parent_depth_value = None
+                    if parent_depth_value is None:
+                        parent_row = cur.execute(
+                            "SELECT depth FROM players WHERE steamAccountId=?",
+                            (steam_account_id,),
+                        ).fetchone()
+                        parent_depth_value = (
+                            int(parent_row["depth"])
+                            if parent_row and parent_row["depth"] is not None
+                            else 0
+                        )
+                    next_depth_value = parent_depth_value + 1
+
+                child_rows = [
+                    (new_id, next_depth_value)
+                    for new_id in discovered_ids
+                    if new_id != steam_account_id
+                ]
+                if child_rows:
+                    cur.executemany(
                         """
                         INSERT INTO players (
                             steamAccountId,
@@ -416,7 +441,7 @@ def create_app() -> Flask:
                         ON CONFLICT(steamAccountId) DO UPDATE SET
                             depth=excluded.depth
                         """,
-                        (new_id, next_depth),
+                        child_rows,
                     )
                 cur.execute(
                     """
