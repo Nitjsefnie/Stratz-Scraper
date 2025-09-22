@@ -11,6 +11,8 @@ LOCK_PATH = DB_PATH.with_suffix(".lock")
 
 
 def connect() -> sqlite3.Connection:
+    if not DB_PATH.exists():
+        ensure_schema()
     connection = sqlite3.connect(DB_PATH, timeout=30)
     connection.execute("PRAGMA busy_timeout = 5000")
     connection.row_factory = sqlite3.Row
@@ -36,46 +38,48 @@ def db_connection(write: bool = False) -> sqlite3.Connection:
 
 def ensure_schema() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with db_connection(write=True) as conn:
-        conn.executescript(
-            """
-            DROP TABLE IF EXISTS hero_stats;
-            DROP TABLE IF EXISTS players;
-            DROP TABLE IF EXISTS meta;
-            DROP TABLE IF EXISTS best;
+    with FileLock(LOCK_PATH):
+        with sqlite3.connect(DB_PATH, timeout=30) as conn:
+            conn.execute("PRAGMA busy_timeout = 5000")
+            conn.executescript(
+                """
+                DROP TABLE IF EXISTS hero_stats;
+                DROP TABLE IF EXISTS players;
+                DROP TABLE IF EXISTS meta;
+                DROP TABLE IF EXISTS best;
 
-            CREATE TABLE players (
-                steamAccountId INTEGER PRIMARY KEY,
-                depth INTEGER,
-                assigned_to TEXT,
-                assigned_at DATETIME,
-                hero_refreshed_at DATETIME,
-                hero_done INTEGER DEFAULT 0,
-                discover_done INTEGER DEFAULT 0
-            );
+                CREATE TABLE players (
+                    steamAccountId INTEGER PRIMARY KEY,
+                    depth INTEGER,
+                    assigned_to TEXT,
+                    assigned_at DATETIME,
+                    hero_refreshed_at DATETIME,
+                    hero_done INTEGER DEFAULT 0,
+                    discover_done INTEGER DEFAULT 0
+                );
 
-            CREATE TABLE hero_stats (
-                steamAccountId INTEGER,
-                heroId INTEGER,
-                matches INTEGER,
-                wins INTEGER,
-                PRIMARY KEY (steamAccountId, heroId)
-            );
+                CREATE TABLE hero_stats (
+                    steamAccountId INTEGER,
+                    heroId INTEGER,
+                    matches INTEGER,
+                    wins INTEGER,
+                    PRIMARY KEY (steamAccountId, heroId)
+                );
 
-            CREATE TABLE best (
-                hero_id INTEGER PRIMARY KEY,
-                hero_name TEXT,
-                player_id INTEGER,
-                matches INTEGER,
-                wins INTEGER
-            );
+                CREATE TABLE best (
+                    hero_id INTEGER PRIMARY KEY,
+                    hero_name TEXT,
+                    player_id INTEGER,
+                    matches INTEGER,
+                    wins INTEGER
+                );
 
-            CREATE TABLE meta (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-            """
-        )
+                CREATE TABLE meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                """
+            )
 
 
 def release_incomplete_assignments(max_age_minutes: int = 5, existing: sqlite3.Connection | None = None) -> int:
