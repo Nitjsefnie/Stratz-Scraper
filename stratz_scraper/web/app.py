@@ -94,7 +94,7 @@ def create_app() -> Flask:
                         FROM players
                         WHERE hero_done=1
                           AND discover_done=0
-                          AND (assigned_to IS NULL OR assigned_to='discover')
+                          AND assigned_to IS NULL
                         ORDER BY COALESCE(depth, 0) ASC, steamAccountId ASC
                         LIMIT 1
                     )
@@ -102,10 +102,30 @@ def create_app() -> Flask:
                     SET assigned_to='discover',
                         assigned_at=CURRENT_TIMESTAMP
                     WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
-                      AND (assigned_to IS NULL OR assigned_to='discover')
+                      AND assigned_to IS NULL
                     RETURNING steamAccountId, depth
                     """,
                 ).fetchone()
+                if not assigned:
+                    assigned = cur.execute(
+                        """
+                        WITH candidate AS (
+                            SELECT steamAccountId, depth
+                            FROM players
+                            WHERE hero_done=1
+                              AND discover_done=0
+                              AND assigned_to='discover'
+                            ORDER BY COALESCE(depth, 0) ASC, steamAccountId ASC
+                            LIMIT 1
+                        )
+                        UPDATE players
+                        SET assigned_to='discover',
+                            assigned_at=CURRENT_TIMESTAMP
+                        WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
+                          AND assigned_to='discover'
+                        RETURNING steamAccountId, depth
+                        """,
+                    ).fetchone()
                 if not assigned:
                     return None
                 depth_value = assigned["depth"]
