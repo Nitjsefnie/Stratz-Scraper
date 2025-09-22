@@ -8,11 +8,21 @@ from .locking import FileLock
 
 DB_PATH = Path("dota.db")
 LOCK_PATH = DB_PATH.with_suffix(".lock")
+INITIAL_PLAYER_ID = 293053907
+
+
+def ensure_schema_exists() -> None:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if DB_PATH.exists():
+        return
+    with FileLock(LOCK_PATH):
+        if DB_PATH.exists():
+            return
+        ensure_schema(lock_acquired=True)
 
 
 def connect() -> sqlite3.Connection:
-    if not DB_PATH.exists():
-        ensure_schema()
+    ensure_schema_exists()
     connection = sqlite3.connect(DB_PATH, timeout=30)
     connection.execute("PRAGMA busy_timeout = 5000")
     connection.row_factory = sqlite3.Row
@@ -21,6 +31,7 @@ def connect() -> sqlite3.Connection:
 
 @contextmanager
 def db_connection(write: bool = False) -> sqlite3.Connection:
+    ensure_schema_exists()
     lock_ctx = FileLock(LOCK_PATH) if write else nullcontext()
     with lock_ctx:
         conn = connect()
@@ -36,9 +47,10 @@ def db_connection(write: bool = False) -> sqlite3.Connection:
             conn.close()
 
 
-def ensure_schema() -> None:
+def ensure_schema(*, lock_acquired: bool = False) -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with FileLock(LOCK_PATH):
+    lock_ctx = nullcontext() if lock_acquired else FileLock(LOCK_PATH)
+    with lock_ctx:
         with sqlite3.connect(DB_PATH, timeout=30) as conn:
             conn.execute("PRAGMA busy_timeout = 5000")
             conn.executescript(
@@ -79,6 +91,13 @@ def ensure_schema() -> None:
                     value TEXT NOT NULL
                 );
                 """
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO players (steamAccountId, depth)
+                VALUES (?, 0)
+                """,
+                (INITIAL_PLAYER_ID,),
             )
 
 
@@ -142,10 +161,12 @@ def reset_hero_refresh_once() -> None:
 __all__ = [
     "connect",
     "db_connection",
+    "ensure_schema_exists",
     "ensure_schema",
     "release_incomplete_assignments",
     "ensure_hero_refresh_column",
     "reset_hero_refresh_once",
     "DB_PATH",
     "LOCK_PATH",
+    "INITIAL_PLAYER_ID",
 ]

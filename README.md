@@ -18,7 +18,7 @@ Key routes include:
 - `GET /seed`: Local-only endpoint for inserting a contiguous range of seed accounts at depth 0.【F:app.py†L243-L270】
 - `GET /best`: Returns the current leaderboard of best performers per hero.【F:app.py†L272-L277】
 
-The app still runs in debug mode on port 8000 when launched directly.【F:app.py†L279-L280】
+The app still runs in debug mode on port 80 when launched directly.【F:app.py†L1-L7】
 
 ### Database Layer (`database.py`)
 `ensure_schema` now drops the legacy tables and recreates the schema with explicit BFS metadata: each player row stores the Steam account ID, depth, assignment metadata, and completion flags for both hero and discovery phases. Hero statistics are keyed by `(steamAccountId, heroId)`, the `best` table retains its existing structure, and the `meta` table persists simple key/value settings. `release_incomplete_assignments` clears any `assigned_to` markers regardless of phase so the queue is ready after restarts.【F:database.py†L1-L52】【F:database.py†L55-L68】
@@ -56,7 +56,7 @@ Start the development server with:
 python app.py
 ```
 
-The app listens on `0.0.0.0:8000`. Ensure the process has permission to create `dota.db`; on first boot it will populate the schema and seed the root account automatically. When deploying behind a proxy, forward the original client IP so the `/seed` endpoint remains restricted to local administrators via `is_local_request`.【F:app.py†L14-L43】【F:app.py†L243-L280】
+The app listens on `0.0.0.0:80`. Ensure the process has permission to create `dota.db`; on first boot it will populate the schema and seed the root account automatically. When deploying behind a proxy, forward the original client IP so the `/seed` endpoint remains restricted to local administrators via `is_local_request`.【F:app.py†L1-L7】【F:stratz_scraper/web/app.py†L1-L434】
 
 ## Database Schema Reference
 

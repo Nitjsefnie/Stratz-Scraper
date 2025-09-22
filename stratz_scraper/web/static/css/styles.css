@@ -93,6 +93,20 @@ body {
   margin-bottom: 16px;
 }
 
+.token-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.token-control-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .token-row {
   display: flex;
   flex-direction: column;
