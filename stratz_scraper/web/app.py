@@ -294,7 +294,26 @@ def create_app() -> Flask:
                 steam_account_id = int(data["steamAccountId"])
             except (KeyError, TypeError, ValueError):
                 return jsonify({"status": "error", "message": "steamAccountId is required"}), 400
-            heroes = data.get("heroes", [])
+            heroes_payload = data.get("heroes", [])
+            hero_stats_rows = []
+            best_rows = []
+            for hero in heroes_payload:
+                try:
+                    hero_id = int(hero["heroId"])
+                    matches_value = hero.get("matches", hero.get("games"))
+                    if matches_value is None:
+                        continue
+                    matches = int(matches_value)
+                    wins = int(hero.get("wins", 0))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                hero_stats_rows.append((steam_account_id, hero_id, matches, wins))
+                hero_name = HEROES.get(hero_id)
+                if hero_name:
+                    best_rows.append(
+                        (hero_id, hero_name, steam_account_id, matches, wins)
+                    )
+
             with db_connection(write=True) as conn:
                 cur = conn.cursor()
                 cur.execute("BEGIN")
@@ -302,17 +321,8 @@ def create_app() -> Flask:
                     "DELETE FROM hero_stats WHERE steamAccountId = ?",
                     (steam_account_id,),
                 )
-                for hero in heroes:
-                    try:
-                        hero_id = int(hero["heroId"])
-                        matches_value = hero.get("matches", hero.get("games"))
-                        if matches_value is None:
-                            continue
-                        matches = int(matches_value)
-                        wins = int(hero.get("wins", 0))
-                    except (KeyError, TypeError, ValueError):
-                        continue
-                    cur.execute(
+                if hero_stats_rows:
+                    cur.executemany(
                         """
                         INSERT INTO hero_stats (steamAccountId, heroId, matches, wins)
                         VALUES (?,?,?,?)
@@ -320,12 +330,10 @@ def create_app() -> Flask:
                             matches=excluded.matches,
                             wins=excluded.wins
                         """,
-                        (steam_account_id, hero_id, matches, wins),
+                        hero_stats_rows,
                     )
-                    hero_name = HEROES.get(hero_id)
-                    if not hero_name:
-                        continue
-                    cur.execute(
+                if best_rows:
+                    cur.executemany(
                         """
                         INSERT INTO best (hero_id, hero_name, player_id, matches, wins)
                         VALUES (?,?,?,?,?)
@@ -335,7 +343,7 @@ def create_app() -> Flask:
                             player_id=excluded.player_id
                         WHERE excluded.matches > best.matches
                         """,
-                        (hero_id, hero_name, steam_account_id, matches, wins),
+                        best_rows,
                     )
                 cur.execute(
                     """
