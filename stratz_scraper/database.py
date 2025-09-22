@@ -53,6 +53,7 @@ def ensure_schema(*, lock_acquired: bool = False) -> None:
     with lock_ctx:
         with sqlite3.connect(DB_PATH, timeout=30) as conn:
             conn.execute("PRAGMA busy_timeout = 5000")
+            conn.execute("PRAGMA journal_mode=WAL;")
             conn.executescript(
                 """
                 DROP TABLE IF EXISTS hero_stats;
