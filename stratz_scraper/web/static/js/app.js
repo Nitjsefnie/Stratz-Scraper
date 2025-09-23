@@ -3,6 +3,15 @@ const state = {
   maxBackoff: 86_400_000,
   tokenCounter: 0,
   tokens: [],
+  bulkMode: false,
+  bulk: {
+    queue: [],
+    activeBatchSize: 0,
+    completed: 0,
+    results: [],
+    fetchingPromise: null,
+    submittingPromise: null,
+  },
 };
 
 const TOKEN_LOG_MAX_ENTRIES = 200;
@@ -26,6 +35,7 @@ const elements = {
   backoffText: document.getElementById("backoffText"),
   statusChip: document.getElementById("runStatus"),
   requestsRemaining: document.getElementById("requestsRemaining"),
+  bulkToggle: document.getElementById("bulkToggle"),
 };
 
 function getCookie(name) {
@@ -124,6 +134,23 @@ function updateButtons() {
   );
   elements.begin.disabled = !hasReadyToken;
   elements.stop.disabled = !state.running;
+}
+
+function updateBulkToggleState() {
+  if (!elements.bulkToggle) return;
+  elements.bulkToggle.checked = state.bulkMode;
+  elements.bulkToggle.disabled = state.running;
+}
+
+function resetBulkState() {
+  state.bulk.queue = [];
+  state.bulk.activeBatchSize = 0;
+  state.bulk.completed = 0;
+  state.bulk.results = [];
+}
+
+function getRunningTokenCount() {
+  return state.tokens.filter((token) => token.running && !token.stopRequested).length;
 }
 
 function parseMaxRequests(value) {
@@ -438,8 +465,12 @@ function updateTokenDisplay(token) {
 
 function updateRunningState() {
   state.running = state.tokens.some((token) => token.running);
+  if (!state.running) {
+    resetBulkState();
+  }
   refreshStatusChip();
   updateButtons();
+  updateBulkToggleState();
   updateBackoffDisplay();
   updateRequestsRemainingDisplay();
   state.tokens.forEach((token) => updateTokenDisplay(token));
@@ -671,6 +702,140 @@ async function getTask() {
   return payload.task;
 }
 
+async function fetchBulkTasks(tokenCount) {
+  const response = await fetch("/tasks/bulk", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tokens: tokenCount }),
+  });
+  if (!response.ok) {
+    throw new Error(`Bulk task request failed with status ${response.status}`);
+  }
+  const payload = await response.json();
+  const tasks = Array.isArray(payload.tasks) ? payload.tasks : [];
+  return tasks;
+}
+
+async function ensureBulkTasks(runningCount) {
+  if (!state.bulkMode) {
+    return;
+  }
+  if (state.bulk.activeBatchSize > 0) {
+    return;
+  }
+  if (state.bulk.fetchingPromise) {
+    await state.bulk.fetchingPromise;
+    return;
+  }
+  if (runningCount <= 0) {
+    return;
+  }
+
+  const tokenCount = Math.max(1, runningCount);
+  const fetchPromise = (async () => {
+    const tasks = await fetchBulkTasks(tokenCount);
+    if (!state.bulkMode || getRunningTokenCount() === 0) {
+      return;
+    }
+    if (Array.isArray(tasks) && tasks.length > 0) {
+      state.bulk.queue.push(...tasks);
+      state.bulk.activeBatchSize = tasks.length;
+      state.bulk.completed = 0;
+      state.bulk.results = [];
+    }
+  })();
+  state.bulk.fetchingPromise = fetchPromise.finally(() => {
+    state.bulk.fetchingPromise = null;
+  });
+  await state.bulk.fetchingPromise;
+}
+
+async function submitBulkResults() {
+  if (!state.bulkMode || state.bulk.activeBatchSize === 0) {
+    return false;
+  }
+  if (state.bulk.submittingPromise) {
+    return state.bulk.submittingPromise;
+  }
+  const resultsToSend = state.bulk.results.slice();
+  const promise = (async () => {
+    if (resultsToSend.length === 0) {
+      state.bulk.results = [];
+      state.bulk.activeBatchSize = 0;
+      state.bulk.completed = 0;
+      return false;
+    }
+    const response = await fetch("/submit/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tasks: resultsToSend }),
+    });
+    if (!response.ok) {
+      throw new Error(`Bulk submit failed with status ${response.status}`);
+    }
+    state.bulk.results = [];
+    state.bulk.activeBatchSize = 0;
+    state.bulk.completed = 0;
+    return true;
+  })();
+  state.bulk.submittingPromise = promise.finally(() => {
+    state.bulk.submittingPromise = null;
+  });
+  return state.bulk.submittingPromise;
+}
+
+async function recordBulkResult(result) {
+  state.bulk.results.push(result);
+  state.bulk.completed += 1;
+  if (state.bulk.completed >= state.bulk.activeBatchSize) {
+    return submitBulkResults();
+  }
+  return false;
+}
+
+async function markBulkTaskFailed() {
+  if (!state.bulkMode || state.bulk.activeBatchSize === 0) {
+    return false;
+  }
+  state.bulk.completed += 1;
+  if (state.bulk.completed >= state.bulk.activeBatchSize) {
+    return submitBulkResults();
+  }
+  return false;
+}
+
+async function acquireTaskForToken(token) {
+  if (!state.bulkMode) {
+    return getTask();
+  }
+
+  while (!token.stopRequested) {
+    if (!state.bulkMode) {
+      return null;
+    }
+    if (state.bulk.queue.length > 0) {
+      return state.bulk.queue.shift();
+    }
+    if (state.bulk.activeBatchSize > 0) {
+      if (state.bulk.completed >= state.bulk.activeBatchSize) {
+        await submitBulkResults();
+      } else {
+        await delay(200);
+      }
+      continue;
+    }
+    const runningCount = getRunningTokenCount();
+    if (runningCount <= 0) {
+      return null;
+    }
+    await ensureBulkTasks(runningCount);
+    if (state.bulk.queue.length === 0) {
+      return null;
+    }
+  }
+  return null;
+}
+
 async function resetTask(task) {
   if (!task) return;
   const response = await fetch("/task/reset", {
@@ -798,6 +963,13 @@ async function discoverMatches(playerId, token, { take = 100, skip = 0 } = {}) {
 }
 
 async function submitHeroStats(playerId, heroes) {
+  if (state.bulkMode) {
+    return recordBulkResult({
+      type: "fetch_hero_stats",
+      steamAccountId: playerId,
+      heroes,
+    });
+  }
   const response = await fetch("/submit", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -810,6 +982,7 @@ async function submitHeroStats(playerId, heroes) {
   if (!response.ok) {
     throw new Error(`Submit failed with status ${response.status}`);
   }
+  return true;
 }
 
 async function submitDiscovery(playerId, discovered, depth) {
@@ -821,6 +994,9 @@ async function submitDiscovery(playerId, discovered, depth) {
   if (Number.isFinite(depth)) {
     payload.depth = depth;
   }
+  if (state.bulkMode) {
+    return recordBulkResult(payload);
+  }
   const response = await fetch("/submit", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -829,6 +1005,7 @@ async function submitDiscovery(playerId, discovered, depth) {
   if (!response.ok) {
     throw new Error(`Submit failed with status ${response.status}`);
   }
+  return true;
 }
 
 async function refreshProgress() {
@@ -918,7 +1095,7 @@ async function workLoopForToken(token) {
   while (!token.stopRequested) {
     let task = null;
     try {
-      task = await getTask();
+      task = await acquireTaskForToken(token);
       if (!task) {
         const wait = 60_000;
         logToken(token, "No tasks available. Waiting 60 seconds before retrying.");
@@ -933,15 +1110,21 @@ async function workLoopForToken(token) {
       }
       if (token.stopRequested) {
         await resetTask(task).catch(() => {});
+        const refreshAfterReset = await markBulkTaskFailed();
+        if (refreshAfterReset) {
+          await refreshProgress();
+        }
         break;
       }
       const taskId = task.steamAccountId;
+      let shouldRefresh = true;
       if (task.type === "fetch_hero_stats") {
         logToken(token, `Hero stats task for ${taskId}.`);
         const heroes = await fetchPlayerHeroes(taskId, token.activeToken);
         logToken(token, `Fetched ${heroes.length} heroes for ${taskId}.`);
-        await submitHeroStats(taskId, heroes);
-        logToken(token, `Submitted ${heroes.length} heroes for ${taskId}.`);
+        shouldRefresh = await submitHeroStats(taskId, heroes);
+        const verb = state.bulkMode ? "Queued" : "Submitted";
+        logToken(token, `${verb} ${heroes.length} heroes for ${taskId}.`);
       } else if (task.type === "discover_matches") {
         logToken(
           token,
@@ -952,17 +1135,24 @@ async function workLoopForToken(token) {
           token,
           `Discovered ${discovered.length} accounts from ${taskId}.`,
         );
-        await submitDiscovery(taskId, discovered, task.depth);
-        logToken(token, `Submitted discovery results for ${taskId}.`);
+        shouldRefresh = await submitDiscovery(taskId, discovered, task.depth);
+        const verb = state.bulkMode ? "Queued" : "Submitted";
+        logToken(token, `${verb} discovery results for ${taskId}.`);
       } else {
         logToken(
           token,
           `Received unknown task type ${task.type}. Resetting task ${taskId}.`,
         );
         await resetTask(task).catch(() => {});
+        const refreshAfterReset = await markBulkTaskFailed();
+        if (refreshAfterReset) {
+          await refreshProgress();
+        }
         break;
       }
-      await refreshProgress();
+      if (shouldRefresh) {
+        await refreshProgress();
+      }
       if (token.requestsRemaining !== null) {
         token.requestsRemaining = Math.max(0, token.requestsRemaining - 1);
         updateRequestsRemainingDisplay();
@@ -992,6 +1182,10 @@ async function workLoopForToken(token) {
             token,
             `Failed to reset ${task?.steamAccountId ?? "?"}: ${resetMessage}`,
           );
+        }
+        const refreshAfterReset = await markBulkTaskFailed();
+        if (refreshAfterReset) {
+          await refreshProgress();
         }
       }
       if (!task) {
@@ -1093,12 +1287,14 @@ function loadTokensFromStorage() {
     renderTokens();
   }
   updateButtons();
+  updateBulkToggleState();
 }
 
 function initialise() {
   loadTokensFromStorage();
   updateBackoffDisplay();
   updateRequestsRemainingDisplay();
+  updateBulkToggleState();
   refreshStatusChip();
   refreshProgress().catch((error) => log(error.message));
   loadBest().catch((error) => log(error.message));
@@ -1139,6 +1335,25 @@ if (elements.importTokensFile) {
     const files = target?.files;
     const file = files && files.length > 0 ? files[0] : null;
     handleImportFile(file);
+  });
+}
+
+if (elements.bulkToggle) {
+  elements.bulkToggle.addEventListener("change", () => {
+    if (state.running) {
+      updateBulkToggleState();
+      return;
+    }
+    state.bulkMode = elements.bulkToggle.checked;
+    if (!state.bulkMode) {
+      resetBulkState();
+    }
+    updateBulkToggleState();
+    log(
+      state.bulkMode
+        ? "Bulk task batching enabled. Each request leases 50 tasks per active token."
+        : "Bulk task batching disabled."
+    );
   });
 }
 

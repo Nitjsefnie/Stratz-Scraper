@@ -103,6 +103,374 @@ def maybe_run_assignment_cleanup(conn) -> bool:
     return True
 
 
+def lease_tasks(cur, requested_count: int) -> tuple[list[dict], bool]:
+    """Assign up to ``requested_count`` tasks and return them."""
+
+    max_tasks = 1 if requested_count <= 0 else int(requested_count)
+    tasks: list[dict] = []
+    should_checkpoint = False
+
+    def assign_discovery() -> dict | None:
+        assigned = locked_execute(
+            cur,
+            """
+            WITH candidate AS (
+                SELECT steamAccountId, depth
+                FROM players
+                WHERE hero_done=1
+                  AND discover_done=0
+                  AND assigned_to IS NULL
+                ORDER BY COALESCE(depth, 0) ASC, steamAccountId ASC
+                LIMIT 1
+            )
+            UPDATE players
+            SET assigned_to='discover',
+                assigned_at=CURRENT_TIMESTAMP
+            WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
+              AND assigned_to IS NULL
+            RETURNING steamAccountId, depth
+            """,
+        ).fetchone()
+        if not assigned:
+            assigned = locked_execute(
+                cur,
+                """
+                WITH candidate AS (
+                    SELECT steamAccountId, depth
+                    FROM players
+                    WHERE hero_done=1
+                      AND discover_done=0
+                      AND assigned_to='discover'
+                    ORDER BY COALESCE(depth, 0) ASC, steamAccountId ASC
+                    LIMIT 1
+                )
+                UPDATE players
+                SET assigned_to='discover',
+                    assigned_at=CURRENT_TIMESTAMP
+                WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
+                  AND assigned_to='discover'
+                RETURNING steamAccountId, depth
+                """,
+            ).fetchone()
+        if not assigned:
+            return None
+        depth_value = assigned["depth"]
+        return {
+            "type": "discover_matches",
+            "steamAccountId": int(assigned["steamAccountId"]),
+            "depth": int(depth_value) if depth_value is not None else 0,
+        }
+
+    def restart_discovery_cycle() -> bool:
+        locked_execute(
+            cur,
+            """
+            UPDATE players
+            SET discover_done=0,
+                depth=CASE WHEN depth=0 THEN 0 ELSE NULL END,
+                assigned_at=CASE WHEN assigned_to='discover' THEN NULL ELSE assigned_at END,
+                assigned_to=CASE WHEN assigned_to='discover' THEN NULL ELSE assigned_to END
+            """,
+        )
+        return True
+
+    def assign_refresh() -> dict | None:
+        assigned_row = locked_execute(
+            cur,
+            """
+            WITH candidate AS (
+                SELECT steamAccountId
+                FROM players
+                WHERE hero_done=1
+                  AND assigned_to IS NULL
+                ORDER BY COALESCE(hero_refreshed_at, '1970-01-01') ASC,
+                         steamAccountId ASC
+                LIMIT 1
+            )
+            UPDATE players
+            SET hero_done=0,
+                assigned_to='hero',
+                assigned_at=CURRENT_TIMESTAMP
+            WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
+              AND hero_done=1
+              AND assigned_to IS NULL
+            RETURNING steamAccountId
+            """,
+        ).fetchone()
+        if not assigned_row:
+            return None
+        return {
+            "type": "fetch_hero_stats",
+            "steamAccountId": int(assigned_row["steamAccountId"]),
+        }
+
+    def assign_hero() -> dict | None:
+        assigned_row = locked_execute(
+            cur,
+            """
+            WITH candidate AS (
+                SELECT steamAccountId
+                FROM players
+                WHERE hero_done=0
+                  AND assigned_to IS NULL
+                ORDER BY COALESCE(depth, 0) ASC, steamAccountId ASC
+                LIMIT 1
+            )
+            UPDATE players
+            SET assigned_to='hero',
+                assigned_at=CURRENT_TIMESTAMP
+            WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
+              AND hero_done=0
+              AND assigned_to IS NULL
+            RETURNING steamAccountId
+            """,
+        ).fetchone()
+        if not assigned_row:
+            return None
+        return {
+            "type": "fetch_hero_stats",
+            "steamAccountId": int(assigned_row["steamAccountId"]),
+        }
+
+    counter_row = cur.execute(
+        "SELECT value FROM meta WHERE key=?",
+        ("task_assignment_counter",),
+    ).fetchone()
+    try:
+        current_count = int(counter_row["value"]) if counter_row else 0
+    except (TypeError, ValueError):
+        current_count = 0
+
+    loop_count = current_count
+
+    while len(tasks) < max_tasks:
+        next_count = loop_count + 1
+        refresh_due = next_count % 10 == 0
+        discovery_due = next_count % 100 == 0
+        checkpoint_due = next_count % 10000 == 0
+        should_truncate_wal = False
+
+        candidate_payload = None
+
+        if discovery_due:
+            candidate_payload = assign_discovery()
+            if candidate_payload is None and restart_discovery_cycle():
+                should_truncate_wal = True
+                candidate_payload = assign_discovery()
+
+        if candidate_payload is None and refresh_due:
+            candidate_payload = assign_refresh()
+
+        if candidate_payload is None:
+            candidate_payload = assign_hero()
+
+        if candidate_payload is None:
+            hero_pending = cur.execute(
+                "SELECT 1 FROM players WHERE hero_done=0 LIMIT 1"
+            ).fetchone()
+            if not hero_pending and not discovery_due:
+                candidate_payload = assign_discovery()
+
+        if candidate_payload is not None:
+            tasks.append(candidate_payload)
+            locked_execute(
+                cur,
+                """
+                INSERT INTO meta (key, value)
+                VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                """,
+                ("task_assignment_counter", str(next_count)),
+            )
+            if checkpoint_due or should_truncate_wal:
+                should_checkpoint = True
+            loop_count = next_count
+            continue
+
+        if refresh_due or discovery_due:
+            break
+
+        loop_count = next_count
+
+    return tasks, should_checkpoint
+
+
+def handle_hero_submission(cur, data: dict) -> int:
+    try:
+        steam_account_id = int(data["steamAccountId"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("steamAccountId is required") from None
+
+    heroes_payload = data.get("heroes", [])
+    hero_stats_rows = []
+    best_rows = []
+    for hero in heroes_payload:
+        try:
+            hero_id = int(hero["heroId"])
+            matches_value = hero.get("matches", hero.get("games"))
+            if matches_value is None:
+                continue
+            matches = int(matches_value)
+            wins = int(hero.get("wins", 0))
+        except (KeyError, TypeError, ValueError):
+            continue
+        hero_stats_rows.append((steam_account_id, hero_id, matches, wins))
+        hero_name = HEROES.get(hero_id)
+        if hero_name:
+            best_rows.append((hero_id, hero_name, steam_account_id, matches, wins))
+
+    assignment_row = locked_execute(
+        cur,
+        "SELECT assigned_at FROM players WHERE steamAccountId=?",
+        (steam_account_id,),
+    ).fetchone()
+    assigned_at_value = assignment_row["assigned_at"] if assignment_row else None
+
+    locked_execute(
+        cur,
+        "DELETE FROM hero_stats WHERE steamAccountId = ?",
+        (steam_account_id,),
+    )
+    if hero_stats_rows:
+        locked_executemany(
+            cur,
+            """
+            INSERT INTO hero_stats (steamAccountId, heroId, matches, wins)
+            VALUES (?,?,?,?)
+            """,
+            hero_stats_rows,
+        )
+    if best_rows:
+        locked_executemany(
+            cur,
+            """
+            INSERT INTO best (hero_id, hero_name, player_id, matches, wins)
+            VALUES (?,?,?,?,?)
+            ON CONFLICT(hero_id) DO UPDATE SET
+                matches=excluded.matches,
+                wins=excluded.wins,
+                player_id=excluded.player_id
+            WHERE excluded.matches > best.matches
+            """,
+            best_rows,
+        )
+    locked_execute(
+        cur,
+        """
+        UPDATE players
+        SET hero_done=1,
+            hero_refreshed_at=CURRENT_TIMESTAMP,
+            assigned_to=NULL,
+            assigned_at=NULL
+        WHERE steamAccountId=?
+        """,
+        (steam_account_id,),
+    )
+    record_task_duration(
+        cur,
+        steam_account_id,
+        "fetch_hero_stats",
+        assigned_at_value,
+    )
+    return steam_account_id
+
+
+def handle_discovery_submission(cur, data: dict) -> int:
+    try:
+        steam_account_id = int(data["steamAccountId"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("steamAccountId is required") from None
+
+    discovered_ids: list[int] = []
+    seen_ids: set[int] = set()
+    for value in data.get("discovered", []):
+        try:
+            candidate_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if candidate_id in seen_ids:
+            continue
+        seen_ids.add(candidate_id)
+        discovered_ids.append(candidate_id)
+
+    next_depth_value = None
+    provided_next_depth = data.get("nextDepth")
+    if provided_next_depth is not None:
+        try:
+            next_depth_value = int(provided_next_depth)
+        except (TypeError, ValueError):
+            next_depth_value = None
+    if next_depth_value is None:
+        provided_depth = data.get("depth")
+        parent_depth_value = None
+        if provided_depth is not None:
+            try:
+                parent_depth_value = int(provided_depth)
+            except (TypeError, ValueError):
+                parent_depth_value = None
+        if parent_depth_value is None:
+            parent_row = locked_execute(
+                cur,
+                "SELECT depth FROM players WHERE steamAccountId=?",
+                (steam_account_id,),
+            ).fetchone()
+            parent_depth_value = (
+                int(parent_row["depth"])
+                if parent_row and parent_row["depth"] is not None
+                else 0
+            )
+        next_depth_value = parent_depth_value + 1
+
+    child_rows = [
+        (new_id, next_depth_value)
+        for new_id in discovered_ids
+        if new_id != steam_account_id
+    ]
+    if child_rows:
+        locked_executemany(
+            cur,
+            """
+            INSERT INTO players (
+                steamAccountId,
+                depth,
+                hero_done,
+                discover_done
+            )
+            VALUES (?,?,0,0)
+            ON CONFLICT(steamAccountId) DO UPDATE SET
+                depth=excluded.depth
+            """,
+            child_rows,
+        )
+
+    assignment_row = locked_execute(
+        cur,
+        "SELECT assigned_at FROM players WHERE steamAccountId=?",
+        (steam_account_id,),
+    ).fetchone()
+    assigned_at_value = assignment_row["assigned_at"] if assignment_row else None
+
+    locked_execute(
+        cur,
+        """
+        UPDATE players
+        SET discover_done=1,
+            assigned_to=NULL,
+            assigned_at=NULL
+        WHERE steamAccountId=?
+        """,
+        (steam_account_id,),
+    )
+
+    record_task_duration(
+        cur,
+        steam_account_id,
+        "discover_matches",
+        assigned_at_value,
+    )
+    return steam_account_id
+
+
 def is_local_request() -> bool:
     local_hosts = {"127.0.0.1", "::1"}
     remote_addr = (request.remote_addr or "").strip()
@@ -140,177 +508,9 @@ def create_app() -> Flask:
         with db_connection(write=True) as conn:
             maybe_run_assignment_cleanup(conn)
             cur = conn.cursor()
-
-            def assign_discovery() -> dict | None:
-                assigned = locked_execute(
-                    cur,
-                    """
-                    WITH candidate AS (
-                        SELECT steamAccountId, depth
-                        FROM players
-                        WHERE hero_done=1
-                          AND discover_done=0
-                          AND assigned_to IS NULL
-                        ORDER BY COALESCE(depth, 0) ASC, steamAccountId ASC
-                        LIMIT 1
-                    )
-                    UPDATE players
-                    SET assigned_to='discover',
-                        assigned_at=CURRENT_TIMESTAMP
-                    WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
-                      AND assigned_to IS NULL
-                    RETURNING steamAccountId, depth
-                    """,
-                ).fetchone()
-                if not assigned:
-                    assigned = locked_execute(
-                        cur,
-                        """
-                        WITH candidate AS (
-                            SELECT steamAccountId, depth
-                            FROM players
-                            WHERE hero_done=1
-                              AND discover_done=0
-                              AND assigned_to='discover'
-                            ORDER BY COALESCE(depth, 0) ASC, steamAccountId ASC
-                            LIMIT 1
-                        )
-                        UPDATE players
-                        SET assigned_to='discover',
-                            assigned_at=CURRENT_TIMESTAMP
-                        WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
-                          AND assigned_to='discover'
-                        RETURNING steamAccountId, depth
-                        """,
-                    ).fetchone()
-                if not assigned:
-                    return None
-                depth_value = assigned["depth"]
-                return {
-                    "type": "discover_matches",
-                    "steamAccountId": int(assigned["steamAccountId"]),
-                    "depth": int(depth_value) if depth_value is not None else 0,
-                }
-
-            def restart_discovery_cycle() -> bool:
-                locked_execute(
-                    cur,
-                    """
-                    UPDATE players
-                    SET discover_done=0,
-                        depth=CASE WHEN depth=0 THEN 0 ELSE NULL END,
-                        assigned_at=CASE WHEN assigned_to='discover' THEN NULL ELSE assigned_at END,
-                        assigned_to=CASE WHEN assigned_to='discover' THEN NULL ELSE assigned_to END
-                    """,
-                )
-                return True
-
-            counter_row = cur.execute(
-                "SELECT value FROM meta WHERE key=?",
-                ("task_assignment_counter",),
-            ).fetchone()
-            try:
-                current_count = int(counter_row["value"]) if counter_row else 0
-            except (TypeError, ValueError):
-                current_count = 0
-            loop_count = current_count
-            while True:
-                next_count = loop_count + 1
-                refresh_due = next_count % 10 == 0
-                discovery_due = next_count % 100 == 0
-                checkpoint_due = next_count % 10000 == 0
-                should_truncate_wal = False
-
-                candidate_payload = None
-
-                if discovery_due:
-                    candidate_payload = assign_discovery()
-                    if candidate_payload is None and restart_discovery_cycle():
-                        should_truncate_wal = True
-                        candidate_payload = assign_discovery()
-
-                if candidate_payload is None and refresh_due:
-                    assigned_row = locked_execute(
-                        cur,
-                        """
-                        WITH candidate AS (
-                            SELECT steamAccountId
-                            FROM players
-                            WHERE hero_done=1
-                              AND assigned_to IS NULL
-                            ORDER BY COALESCE(hero_refreshed_at, '1970-01-01') ASC,
-                                     steamAccountId ASC
-                            LIMIT 1
-                        )
-                        UPDATE players
-                        SET hero_done=0,
-                            assigned_to='hero',
-                            assigned_at=CURRENT_TIMESTAMP
-                        WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
-                          AND hero_done=1
-                          AND assigned_to IS NULL
-                        RETURNING steamAccountId
-                        """,
-                    ).fetchone()
-                    if assigned_row:
-                        candidate_payload = {
-                            "type": "fetch_hero_stats",
-                            "steamAccountId": int(assigned_row["steamAccountId"]),
-                        }
-
-                if candidate_payload is None:
-                    assigned_row = locked_execute(
-                        cur,
-                        """
-                        WITH candidate AS (
-                            SELECT steamAccountId
-                            FROM players
-                            WHERE hero_done=0
-                              AND assigned_to IS NULL
-                            ORDER BY COALESCE(depth, 0) ASC, steamAccountId ASC
-                            LIMIT 1
-                        )
-                        UPDATE players
-                        SET assigned_to='hero',
-                            assigned_at=CURRENT_TIMESTAMP
-                        WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
-                          AND hero_done=0
-                          AND assigned_to IS NULL
-                        RETURNING steamAccountId
-                        """,
-                    ).fetchone()
-                    if assigned_row:
-                        candidate_payload = {
-                            "type": "fetch_hero_stats",
-                            "steamAccountId": int(assigned_row["steamAccountId"]),
-                        }
-
-                if candidate_payload is None:
-                    hero_pending = cur.execute(
-                        "SELECT 1 FROM players WHERE hero_done=0 LIMIT 1"
-                    ).fetchone()
-                    if not hero_pending and not discovery_due:
-                        candidate_payload = assign_discovery()
-
-                if candidate_payload is not None:
-                    task_payload = candidate_payload
-                    locked_execute(
-                        cur,
-                        """
-                        INSERT INTO meta (key, value)
-                        VALUES (?, ?)
-                        ON CONFLICT(key) DO UPDATE SET value=excluded.value
-                        """,
-                        ("task_assignment_counter", str(next_count)),
-                    )
-                    if checkpoint_due or should_truncate_wal:
-                        should_checkpoint = True
-                    break
-
-                if refresh_due or discovery_due:
-                    break
-
-                loop_count = next_count
+            tasks, should_checkpoint = lease_tasks(cur, 1)
+            if tasks:
+                task_payload = tasks[0]
         if should_checkpoint:
             with db_connection(write=True) as checkpoint_conn:
                 locked_execute(
@@ -318,6 +518,32 @@ def create_app() -> Flask:
                     "PRAGMA wal_checkpoint(TRUNCATE);",
                 )
         return jsonify({"task": task_payload})
+
+    @app.post("/tasks/bulk")
+    def bulk_tasks():
+        data = request.get_json(silent=True) or {}
+        tokens_value = data.get("tokens")
+        try:
+            token_count = int(tokens_value)
+        except (TypeError, ValueError):
+            token_count = 0
+        if token_count <= 0:
+            return jsonify({"tasks": []})
+
+        capacity = max(1, token_count) * 50
+        tasks: list[dict] = []
+        should_checkpoint = False
+        with db_connection(write=True) as conn:
+            maybe_run_assignment_cleanup(conn)
+            cur = conn.cursor()
+            tasks, should_checkpoint = lease_tasks(cur, capacity)
+        if should_checkpoint:
+            with db_connection(write=True) as checkpoint_conn:
+                locked_execute(
+                    checkpoint_conn,
+                    "PRAGMA wal_checkpoint(TRUNCATE);",
+                )
+        return jsonify({"tasks": tasks})
 
     @app.post("/task/reset")
     def reset_task():
@@ -374,184 +600,67 @@ def create_app() -> Flask:
 
     @app.post("/submit")
     def submit():
-        data = request.get_json(force=True)
+        data = request.get_json(force=True) or {}
         task_type = data.get("type")
-        if task_type == "fetch_hero_stats":
-            try:
-                steam_account_id = int(data["steamAccountId"])
-            except (KeyError, TypeError, ValueError):
-                return jsonify({"status": "error", "message": "steamAccountId is required"}), 400
-            heroes_payload = data.get("heroes", [])
-            hero_stats_rows = []
-            best_rows = []
-            for hero in heroes_payload:
-                try:
-                    hero_id = int(hero["heroId"])
-                    matches_value = hero.get("matches", hero.get("games"))
-                    if matches_value is None:
-                        continue
-                    matches = int(matches_value)
-                    wins = int(hero.get("wins", 0))
-                except (KeyError, TypeError, ValueError):
-                    continue
-                hero_stats_rows.append((steam_account_id, hero_id, matches, wins))
-                hero_name = HEROES.get(hero_id)
-                if hero_name:
-                    best_rows.append(
-                        (hero_id, hero_name, steam_account_id, matches, wins)
-                    )
+        if task_type not in {"fetch_hero_stats", "discover_matches"}:
+            return (
+                jsonify({"status": "error", "message": "Unknown submit type"}),
+                400,
+            )
 
-            with db_connection(write=True) as conn:
-                cur = conn.cursor()
-                assignment_row = locked_execute(
-                    cur,
-                    "SELECT assigned_at FROM players WHERE steamAccountId=?",
-                    (steam_account_id,),
-                ).fetchone()
-                assigned_at_value = (
-                    assignment_row["assigned_at"] if assignment_row is not None else None
-                )
-                locked_execute(
-                    cur,
-                    "DELETE FROM hero_stats WHERE steamAccountId = ?",
-                    (steam_account_id,),
-                )
-                if hero_stats_rows:
-                    locked_executemany(
-                        cur,
-                        """
-                        INSERT INTO hero_stats (steamAccountId, heroId, matches, wins)
-                        VALUES (?,?,?,?)
-                        """,
-                        hero_stats_rows,
-                    )
-                if best_rows:
-                    locked_executemany(
-                        cur,
-                        """
-                        INSERT INTO best (hero_id, hero_name, player_id, matches, wins)
-                        VALUES (?,?,?,?,?)
-                        ON CONFLICT(hero_id) DO UPDATE SET
-                            matches=excluded.matches,
-                            wins=excluded.wins,
-                            player_id=excluded.player_id
-                        WHERE excluded.matches > best.matches
-                        """,
-                        best_rows,
-                    )
-                locked_execute(
-                    cur,
-                    """
-                    UPDATE players
-                    SET hero_done=1,
-                        hero_refreshed_at=CURRENT_TIMESTAMP,
-                        assigned_to=NULL,
-                        assigned_at=NULL
-                    WHERE steamAccountId=?
-                    """,
-                    (steam_account_id,),
-                )
-                record_task_duration(
-                    cur,
-                    steam_account_id,
-                    "fetch_hero_stats",
-                    assigned_at_value,
-                )
-            return jsonify({"status": "ok"})
-        if task_type == "discover_matches":
+        with db_connection(write=True) as conn:
+            cur = conn.cursor()
             try:
-                steam_account_id = int(data["steamAccountId"])
-            except (KeyError, TypeError, ValueError):
-                return jsonify({"status": "error", "message": "steamAccountId is required"}), 400
-            discovered_ids: list[int] = []
-            seen_ids: set[int] = set()
-            for value in data.get("discovered", []):
-                try:
-                    candidate_id = int(value)
-                except (TypeError, ValueError):
-                    continue
-                if candidate_id in seen_ids:
-                    continue
-                seen_ids.add(candidate_id)
-                discovered_ids.append(candidate_id)
-            with db_connection(write=True) as conn:
-                cur = conn.cursor()
-                next_depth_value = None
-                provided_next_depth = data.get("nextDepth")
-                if provided_next_depth is not None:
-                    try:
-                        next_depth_value = int(provided_next_depth)
-                    except (TypeError, ValueError):
-                        next_depth_value = None
-                if next_depth_value is None:
-                    provided_depth = data.get("depth")
-                    parent_depth_value = None
-                    if provided_depth is not None:
-                        try:
-                            parent_depth_value = int(provided_depth)
-                        except (TypeError, ValueError):
-                            parent_depth_value = None
-                    if parent_depth_value is None:
-                        parent_row = locked_execute(
-                            cur,
-                            "SELECT depth FROM players WHERE steamAccountId=?",
-                            (steam_account_id,),
-                        ).fetchone()
-                        parent_depth_value = (
-                            int(parent_row["depth"])
-                            if parent_row and parent_row["depth"] is not None
-                            else 0
-                        )
-                    next_depth_value = parent_depth_value + 1
+                if task_type == "fetch_hero_stats":
+                    handle_hero_submission(cur, data)
+                else:
+                    handle_discovery_submission(cur, data)
+            except ValueError as exc:
+                return (
+                    jsonify({"status": "error", "message": str(exc)}),
+                    400,
+                )
+        return jsonify({"status": "ok"})
 
-                child_rows = [
-                    (new_id, next_depth_value)
-                    for new_id in discovered_ids
-                    if new_id != steam_account_id
-                ]
-                if child_rows:
-                    locked_executemany(
-                        cur,
-                        """
-                        INSERT INTO players (
-                            steamAccountId,
-                            depth,
-                            hero_done,
-                            discover_done
-                        )
-                        VALUES (?,?,0,0)
-                        ON CONFLICT(steamAccountId) DO UPDATE SET
-                            depth=excluded.depth
-                        """,
-                        child_rows,
-                    )
-                assignment_row = locked_execute(
-                    cur,
-                    "SELECT assigned_at FROM players WHERE steamAccountId=?",
-                    (steam_account_id,),
-                ).fetchone()
-                assigned_at_value = (
-                    assignment_row["assigned_at"] if assignment_row is not None else None
+    @app.post("/submit/bulk")
+    def submit_bulk():
+        data = request.get_json(force=True) or {}
+        tasks_payload = data.get("tasks")
+        if tasks_payload is None:
+            return (
+                jsonify({"status": "error", "message": "tasks is required"}),
+                400,
+            )
+        if not isinstance(tasks_payload, list):
+            return (
+                jsonify({"status": "error", "message": "tasks must be an array"}),
+                400,
+            )
+
+        if not tasks_payload:
+            return jsonify({"status": "ok", "processed": 0})
+
+        processed = 0
+        with db_connection(write=True) as conn:
+            cur = conn.cursor()
+            try:
+                for entry in tasks_payload:
+                    if not isinstance(entry, dict):
+                        raise ValueError("Each task must be an object")
+                    task_type = entry.get("type")
+                    if task_type == "fetch_hero_stats":
+                        handle_hero_submission(cur, entry)
+                    elif task_type == "discover_matches":
+                        handle_discovery_submission(cur, entry)
+                    else:
+                        raise ValueError("Unknown submit type")
+                    processed += 1
+            except ValueError as exc:
+                return (
+                    jsonify({"status": "error", "message": str(exc)}),
+                    400,
                 )
-                locked_execute(
-                    cur,
-                    """
-                    UPDATE players
-                    SET discover_done=1,
-                        assigned_to=NULL,
-                        assigned_at=NULL
-                    WHERE steamAccountId=?
-                    """,
-                    (steam_account_id,),
-                )
-                record_task_duration(
-                    cur,
-                    steam_account_id,
-                    "discover_matches",
-                    assigned_at_value,
-                )
-            return jsonify({"status": "ok"})
-        return jsonify({"status": "error", "message": "Unknown submit type"}), 400
+        return jsonify({"status": "ok", "processed": processed})
 
     @app.get("/progress")
     def progress():

@@ -322,8 +322,46 @@ button:disabled {
   font-weight: 600;
 }
 
+.option-row {
+  margin-top: 20px;
+}
+
+.option-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+
+.option-toggle input[type="checkbox"] {
+  margin-top: 4px;
+  width: 18px;
+  height: 18px;
+}
+
+.option-toggle > span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.option-title {
+  font-weight: 600;
+}
+
+.option-description {
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.4;
+  max-width: 52ch;
+}
+
 @media (prefers-color-scheme: dark) {
   .label {
+    color: var(--muted-dark);
+  }
+  .option-description {
     color: var(--muted-dark);
   }
 }

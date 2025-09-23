@@ -57,6 +57,17 @@
             <span id="requestsRemaining" class="value">—</span>
           </div>
         </div>
+        <div class="option-row">
+          <label class="option-toggle">
+            <input id="bulkToggle" type="checkbox">
+            <span>
+              <span class="option-title">Enable bulk task batches</span>
+              <span class="option-description">
+                Assigns 50 tasks per active token and submits results together for fewer round-trips.
+              </span>
+            </span>
+          </label>
+        </div>
       </section>
 
       {% if show_seed %}

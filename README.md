@@ -12,8 +12,10 @@ Key routes include:
 
 - `GET /`: Renders the user interface template and exposes a local-only seeding form when the request originates from localhost.【F:app.py†L44-L58】【F:templates/index.html†L1-L67】
 - `POST /task`: Returns the next unit of work. While any account has unfinished hero statistics, workers receive `fetch_hero_stats` tasks. Only after every player is marked complete for hero stats do workers receive `discover_matches` tasks. Assignments are persisted in the `players` table so a task can be safely retried if a worker crashes.【F:app.py†L60-L115】
+- `POST /tasks/bulk`: Accepts a token count from the client, leases up to 50 tasks per token in a single transaction, and returns them as a batch to minimize assignment round-trips.【F:stratz_scraper/web/app.py†L515-L563】
 - `POST /task/reset`: Releases a task back into the queue. Hero tasks clear any partial hero rows, discovery tasks re-open the player for future crawling, and unknown task types simply clear the assignment flag.【F:app.py†L117-L152】
 - `POST /submit`: Accepts either hero statistics or discovery payloads. Hero submissions upsert per-hero performance, update the leaderboard, and flip the player's `hero_done` flag. Discovery submissions insert any newly found accounts (with incremented depth) and mark the submitting account's discovery phase as complete.【F:app.py†L154-L222】
+- `POST /submit/bulk`: Processes an array of completed tasks in one request, applying the same hero and discovery logic while recording durations for each assignment.【F:stratz_scraper/web/app.py†L565-L642】
 - `GET /progress`: Reports total players along with counts of accounts that have completed hero statistics and discovery. The UI displays both numbers side by side.【F:app.py†L224-L241】【F:static/js/app.js†L216-L226】
 - `GET /seed`: Local-only endpoint for inserting a contiguous range of seed accounts at depth 0.【F:app.py†L243-L270】
 - `GET /best`: Returns the current leaderboard of best performers per hero.【F:app.py†L272-L277】
@@ -39,6 +41,7 @@ The browser script orchestrates tokens, workers, and API interactions:
 
 - **State Management & Persistence**: Tokens, request limits, and worker status are tracked in `state` and persisted to `localStorage`. UI helpers keep the chip, backoff, and quota displays in sync.【F:static/js/app.js†L1-L229】【F:static/js/app.js†L372-L452】
 - **Task Handling**: Workers now interpret typed tasks. Hero tasks call the `PlayerHeroes` GraphQL query and submit `{heroId, matches, wins}` payloads. Discovery tasks call the `PlayerMatches` query, collect unique Steam IDs from match rosters, and send them back so the backend can grow the BFS frontier.【F:static/js/app.js†L231-L347】【F:static/js/app.js†L481-L538】
+- **Bulk Mode Toggle**: Operators can enable bulk batching from the UI, prompting workers to request 50 assignments per active token via `/tasks/bulk` and queue their results for a single `/submit/bulk` payload, drastically reducing HTTP chatter for large fleets.【F:templates/index.html†L38-L64】【F:static/js/app.js†L1-L115】【F:static/js/app.js†L620-L742】【F:static/js/app.js†L960-L1030】【F:static/js/app.js†L1080-L1213】
 - **Recovery Logic**: If a worker errors out, the task is reset with both its Steam ID and type so the backend can restore the correct phase state. Exponential backoff continues to throttle repeated failures.【F:static/js/app.js†L481-L538】
 - **Initialization**: On load the script restores saved tokens, refreshes progress (showing both hero and discovery completion counts), and fetches the leaderboard.【F:static/js/app.js†L539-L606】
 
