@@ -68,6 +68,7 @@ def ensure_schema(*, lock_acquired: bool = False) -> None:
                 DROP TABLE IF EXISTS players;
                 DROP TABLE IF EXISTS meta;
                 DROP TABLE IF EXISTS best;
+                DROP TABLE IF EXISTS task_durations;
 
                 CREATE TABLE players (
                     steamAccountId INTEGER PRIMARY KEY,
@@ -99,6 +100,15 @@ def ensure_schema(*, lock_acquired: bool = False) -> None:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+
+                CREATE TABLE task_durations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    steamAccountId INTEGER,
+                    task_type TEXT NOT NULL,
+                    assigned_at DATETIME,
+                    submitted_at DATETIME,
+                    duration_seconds REAL
+                );
                 """
             )
             conn.execute(
@@ -122,6 +132,20 @@ def ensure_indexes(*, lock_acquired: bool = False) -> None:
             conn.execute("PRAGMA busy_timeout = 5000")
             conn.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS task_durations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    steamAccountId INTEGER,
+                    task_type TEXT NOT NULL,
+                    assigned_at DATETIME,
+                    submitted_at DATETIME,
+                    duration_seconds REAL
+                );
+                CREATE INDEX IF NOT EXISTS idx_task_durations_account
+                    ON task_durations (steamAccountId);
+                CREATE INDEX IF NOT EXISTS idx_task_durations_type
+                    ON task_durations (task_type);
+                CREATE INDEX IF NOT EXISTS idx_task_durations_submitted
+                    ON task_durations (submitted_at);
                 CREATE INDEX IF NOT EXISTS idx_players_hero_queue
                     ON players (
                         hero_done,

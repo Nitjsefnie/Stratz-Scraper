@@ -21,6 +21,58 @@ ASSIGNMENT_CLEANUP_KEY = "last_assignment_cleanup"
 ASSIGNMENT_CLEANUP_INTERVAL = timedelta(seconds=60)
 
 
+def _parse_sqlite_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def record_task_duration(
+    cur, steam_account_id: int, task_type: str, assigned_at_value: str | None
+) -> float | None:
+    submitted_at = datetime.now(timezone.utc)
+    assigned_at = _parse_sqlite_timestamp(assigned_at_value)
+    duration_seconds = None
+    if assigned_at is not None:
+        duration_seconds = (submitted_at - assigned_at).total_seconds()
+    locked_execute(
+        cur,
+        """
+        INSERT INTO task_durations (
+            steamAccountId,
+            task_type,
+            assigned_at,
+            submitted_at,
+            duration_seconds
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            steam_account_id,
+            task_type,
+            assigned_at.isoformat() if assigned_at is not None else assigned_at_value,
+            submitted_at.isoformat(),
+            duration_seconds,
+        ),
+    )
+    if duration_seconds is not None:
+        print(
+            f"[task-duration] {task_type} for {steam_account_id} took {duration_seconds:.2f}s",
+            flush=True,
+        )
+    else:
+        print(
+            f"[task-duration] {task_type} for {steam_account_id} has no assignment timestamp",
+            flush=True,
+        )
+    return duration_seconds
+
+
 def maybe_run_assignment_cleanup(conn) -> bool:
     cur = conn.cursor()
     now = datetime.now(timezone.utc)
@@ -351,6 +403,14 @@ def create_app() -> Flask:
 
             with db_connection(write=True) as conn:
                 cur = conn.cursor()
+                assignment_row = locked_execute(
+                    cur,
+                    "SELECT assigned_at FROM players WHERE steamAccountId=?",
+                    (steam_account_id,),
+                ).fetchone()
+                assigned_at_value = (
+                    assignment_row["assigned_at"] if assignment_row is not None else None
+                )
                 locked_execute(
                     cur,
                     "DELETE FROM hero_stats WHERE steamAccountId = ?",
@@ -390,6 +450,12 @@ def create_app() -> Flask:
                     WHERE steamAccountId=?
                     """,
                     (steam_account_id,),
+                )
+                record_task_duration(
+                    cur,
+                    steam_account_id,
+                    "fetch_hero_stats",
+                    assigned_at_value,
                 )
             return jsonify({"status": "ok"})
         if task_type == "discover_matches":
@@ -459,6 +525,14 @@ def create_app() -> Flask:
                         """,
                         child_rows,
                     )
+                assignment_row = locked_execute(
+                    cur,
+                    "SELECT assigned_at FROM players WHERE steamAccountId=?",
+                    (steam_account_id,),
+                ).fetchone()
+                assigned_at_value = (
+                    assignment_row["assigned_at"] if assignment_row is not None else None
+                )
                 locked_execute(
                     cur,
                     """
@@ -469,6 +543,12 @@ def create_app() -> Flask:
                     WHERE steamAccountId=?
                     """,
                     (steam_account_id,),
+                )
+                record_task_duration(
+                    cur,
+                    steam_account_id,
+                    "discover_matches",
+                    assigned_at_value,
                 )
             return jsonify({"status": "ok"})
         return jsonify({"status": "error", "message": "Unknown submit type"}), 400
