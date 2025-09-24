@@ -125,20 +125,25 @@ def _process_hero_submission(
     try:
         with db_connection(write=True) as conn:
             cur = conn.cursor()
-            retryable_execute(
+            retryable_executemany(
                 cur,
-                "DELETE FROM hero_stats WHERE steamAccountId = ?",
-                (steam_account_id,),
+                """
+                INSERT INTO hero_stats (steamAccountId, heroId, matches, wins)
+                VALUES (?,?,?,?)
+                ON CONFLICT(steamAccountId, heroId) DO UPDATE SET
+                    matches = CASE
+                        WHEN excluded.matches > hero_stats.matches
+                        THEN excluded.matches
+                        ELSE hero_stats.matches
+                    END,
+                    wins = CASE
+                        WHEN excluded.matches > hero_stats.matches
+                        THEN excluded.wins
+                        ELSE hero_stats.wins
+                    END
+                """,
+                hero_stats_rows or [],
             )
-            if hero_stats_rows:
-                retryable_executemany(
-                    cur,
-                    """
-                    INSERT INTO hero_stats (steamAccountId, heroId, matches, wins)
-                    VALUES (?,?,?,?)
-                    """,
-                    hero_stats_rows,
-                )
             if best_rows:
                 retryable_executemany(
                     cur,
