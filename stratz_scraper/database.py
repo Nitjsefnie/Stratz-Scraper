@@ -80,10 +80,10 @@ def locked_execute(
     *,
     use_file_lock: bool | None = None,
 ):
-    should_lock = _sql_requires_lock(sql) if use_file_lock is None else use_file_lock
-    if should_lock:
-        with FileLock(LOCK_PATH):
-            return target.execute(sql, parameters)
+    #should_lock = _sql_requires_lock(sql) if use_file_lock is None else use_file_lock
+    #if should_lock:
+    #    with FileLock(LOCK_PATH):
+    #        return target.execute(sql, parameters)
     return target.execute(sql, parameters)
 
 
@@ -217,7 +217,7 @@ def ensure_indexes(*, lock_acquired: bool = False) -> None:
     _INDEXES_ENSURED = True
 
 
-def release_incomplete_assignments(max_age_minutes: int = 5, existing: sqlite3.Connection | None = None) -> int:
+def release_incomplete_assignments(max_age_minutes: int = 10, existing: sqlite3.Connection | None = None) -> int:
     age_modifier = f"-{int(max_age_minutes)} minutes"
     if existing is None:
         with db_connection(write=True) as conn:
