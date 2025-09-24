@@ -45,6 +45,34 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const HTML_ESCAPE_MAP = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+  "`": "&#96;",
+};
+
+function escapeHtml(value) {
+  if (typeof value !== "string" || value.length === 0) {
+    return "";
+  }
+  return value.replace(/[&<>"'`]/g, (char) => HTML_ESCAPE_MAP[char] ?? char);
+}
+
+function safeText(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  return escapeHtml(String(value));
+}
+
+function formatCell(value, fallback = "—") {
+  const safe = safeText(value);
+  return safe || fallback;
+}
+
 function appendLogLine(element, line, {
   maxLength = 50_000,
   retainLength = 40_000,
@@ -895,8 +923,24 @@ async function refreshProgress(options = {}) {
   }
 }
 
+function setBestTableRefreshing(isRefreshing) {
+  if (!elements.bestTable) {
+    return;
+  }
+  elements.bestTable.classList.toggle("refreshing", Boolean(isRefreshing));
+  if (isRefreshing) {
+    elements.bestTable.setAttribute("aria-busy", "true");
+  } else {
+    elements.bestTable.removeAttribute("aria-busy");
+  }
+}
+
 function renderBestTable(rows) {
-  if (!rows.length) {
+  if (!elements.bestTable) {
+    return;
+  }
+  const safeRows = Array.isArray(rows) ? rows : [];
+  if (!safeRows.length) {
     elements.bestTable.innerHTML = '<p class="muted">No data yet.</p>';
     return;
   }
@@ -913,30 +957,39 @@ function renderBestTable(rows) {
       </thead>
       <tbody>
   `;
-  const body = rows
-    .map(
-      (row) => `
+  const body = safeRows
+    .map((row) => {
+      const heroName = formatCell(row?.hero_name);
+      const slug = typeof row?.hero_slug === "string" ? row.hero_slug : "";
+      const href = slug ? `/leaderboards/${encodeURIComponent(slug)}` : "";
+      const heroCell = href ? `<a href="${href}">${heroName}</a>` : heroName;
+      return `
         <tr>
-          <td>${row.hero_name}</td>
-          <td>${row.hero_id}</td>
-          <td>${row.player_id}</td>
-          <td>${row.matches}</td>
-          <td>${row.wins}</td>
+          <td>${heroCell}</td>
+          <td>${formatCell(row?.hero_id)}</td>
+          <td>${formatCell(row?.player_id)}</td>
+          <td>${formatCell(row?.matches)}</td>
+          <td>${formatCell(row?.wins)}</td>
         </tr>
-      `,
-    )
+      `;
+    })
     .join("");
   elements.bestTable.innerHTML = `${header}${body}</tbody></table>`;
 }
 
 async function loadBest() {
-  const response = await fetch("/best");
-  if (!response.ok) {
-    throw new Error(`Best request failed with status ${response.status}`);
+  setBestTableRefreshing(true);
+  try {
+    const response = await fetch("/best");
+    if (!response.ok) {
+      throw new Error(`Best request failed with status ${response.status}`);
+    }
+    const rows = await response.json();
+    renderBestTable(rows);
+    return rows;
+  } finally {
+    setBestTableRefreshing(false);
   }
-  const rows = await response.json();
-  renderBestTable(rows);
-  return rows;
 }
 
 async function seedRange() {
