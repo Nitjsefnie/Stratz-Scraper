@@ -805,11 +805,14 @@ async function submitHeroStats(playerId, heroes) {
       type: "fetch_hero_stats",
       steamAccountId: playerId,
       heroes,
+      task: true,
     }),
   });
   if (!response.ok) {
     throw new Error(`Submit failed with status ${response.status}`);
   }
+  const payload = await response.json();
+  return payload?.task ?? null;
 }
 
 async function submitDiscovery(playerId, discovered, depth) {
@@ -817,6 +820,7 @@ async function submitDiscovery(playerId, discovered, depth) {
     type: "discover_matches",
     steamAccountId: playerId,
     discovered,
+    task: true,
   };
   if (Number.isFinite(depth)) {
     payload.depth = depth;
@@ -829,6 +833,8 @@ async function submitDiscovery(playerId, discovered, depth) {
   if (!response.ok) {
     throw new Error(`Submit failed with status ${response.status}`);
   }
+  const responsePayload = await response.json();
+  return responsePayload?.task ?? null;
 }
 
 async function refreshProgress() {
@@ -915,10 +921,12 @@ async function workLoopForToken(token) {
     logToken(token, `Request limit ${token.requestsRemaining}.`);
   }
 
+  let task = null;
   while (!token.stopRequested) {
-    let task = null;
     try {
-      task = await getTask();
+      if (!task) {
+        task = await getTask();
+      }
       if (!task) {
         const wait = 60_000;
         logToken(token, "No tasks available. Waiting 60 seconds before retrying.");
@@ -936,11 +944,12 @@ async function workLoopForToken(token) {
         break;
       }
       const taskId = task.steamAccountId;
+      let nextTask = null;
       if (task.type === "fetch_hero_stats") {
         logToken(token, `Hero stats task for ${taskId}.`);
         const heroes = await fetchPlayerHeroes(taskId, token.activeToken);
         logToken(token, `Fetched ${heroes.length} heroes for ${taskId}.`);
-        await submitHeroStats(taskId, heroes);
+        nextTask = await submitHeroStats(taskId, heroes);
         logToken(token, `Submitted ${heroes.length} heroes for ${taskId}.`);
       } else if (task.type === "discover_matches") {
         logToken(
@@ -952,7 +961,7 @@ async function workLoopForToken(token) {
           token,
           `Discovered ${discovered.length} accounts from ${taskId}.`,
         );
-        await submitDiscovery(taskId, discovered, task.depth);
+        nextTask = await submitDiscovery(taskId, discovered, task.depth);
         logToken(token, `Submitted discovery results for ${taskId}.`);
       } else {
         logToken(
@@ -968,19 +977,35 @@ async function workLoopForToken(token) {
         updateRequestsRemainingDisplay();
         updateTokenDisplay(token);
         if (token.requestsRemaining === 0) {
+          if (nextTask) {
+            try {
+              await resetTask(nextTask);
+            } catch (resetError) {
+              const resetMessage =
+                resetError instanceof Error ? resetError.message : String(resetError);
+              logToken(
+                token,
+                `Failed to reset next task ${nextTask?.steamAccountId ?? "?"}: ${resetMessage}`,
+              );
+            }
+          }
           logToken(token, "Reached request limit. Stopping worker.");
           break;
         }
       }
+      task = nextTask ?? null;
       token.backoff = 1000;
       updateBackoffDisplay();
       updateTokenDisplay(token);
-      await delay(500);
+      if (!task) {
+        await delay(500);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const activeId = task?.steamAccountId;
       logToken(token, `Error${activeId ? ` for ${activeId}` : ""}: ${message}`);
       showErrorStatus("Retrying");
+      const hadTask = Boolean(task);
       if (task) {
         try {
           await resetTask(task);
@@ -994,7 +1019,8 @@ async function workLoopForToken(token) {
           );
         }
       }
-      if (!task) {
+      task = null;
+      if (!hadTask) {
         const wait = 60_000;
         token.backoff = wait;
         updateBackoffDisplay();
