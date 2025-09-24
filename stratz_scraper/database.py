@@ -74,7 +74,7 @@ def _sql_requires_lock(sql: str) -> bool:
     return True
 
 
-def locked_execute(
+def retryable_execute(
     target: sqlite3.Connection | sqlite3.Cursor,
     sql: str,
     parameters=(),
@@ -88,21 +88,27 @@ def locked_execute(
     while True:
         try:
             return target.execute(sql, parameters)
-        except:
-            time.sleep(0.05)
-            continue
+        except sqlite3.OperationalError as exc:
+            message = str(exc).lower()
+            if "locked" in message or "busy" in message:
+                time.sleep(0.05)
+                continue
+            raise
 
 
-def locked_executemany(
+def retryable_executemany(
     target: sqlite3.Connection | sqlite3.Cursor, sql: str, seq_of_parameters
 ):
     #with FileLock(LOCK_PATH):
     while True:
         try:
             return target.executemany(sql, seq_of_parameters)
-        except:
-            time.sleep(0.05)
-            continue
+        except sqlite3.OperationalError as exc:
+            message = str(exc).lower()
+            if "locked" in message or "busy" in message:
+                time.sleep(0.05)
+                continue
+            raise
 
 
 def ensure_schema(*, lock_acquired: bool = False) -> None:
@@ -232,7 +238,7 @@ def release_incomplete_assignments(max_age_minutes: int = 10, existing: sqlite3.
     age_modifier = f"-{int(max_age_minutes)} minutes"
     if existing is None:
         with db_connection(write=True) as conn:
-            cursor = locked_execute(
+            cursor = retryable_execute(
                 conn,
                 """
                 UPDATE players
@@ -247,7 +253,7 @@ def release_incomplete_assignments(max_age_minutes: int = 10, existing: sqlite3.
                 (age_modifier,),
             )
             return cursor.rowcount if cursor.rowcount is not None else 0
-    cursor = locked_execute(
+    cursor = retryable_execute(
         existing,
         """
         UPDATE players
@@ -271,8 +277,8 @@ __all__ = [
     "ensure_schema",
     "ensure_indexes",
     "release_incomplete_assignments",
-    "locked_execute",
-    "locked_executemany",
+    "retryable_execute",
+    "retryable_executemany",
     "DB_PATH",
     "LOCK_PATH",
     "INITIAL_PLAYER_ID",

@@ -7,8 +7,8 @@ from flask import Flask, Response, abort, jsonify, render_template, request
 
 from ..database import (
     db_connection,
-    locked_execute,
-    locked_executemany,
+    retryable_execute,
+    retryable_executemany,
     release_incomplete_assignments,
 )
 from ..heroes import HEROES, HERO_SLUGS, hero_slug
@@ -41,7 +41,7 @@ def record_task_duration(
     duration_seconds = None
     if assigned_at is not None:
         duration_seconds = (submitted_at - assigned_at).total_seconds()
-    locked_execute(
+    retryable_execute(
         cur,
         """
         INSERT INTO task_durations (
@@ -91,7 +91,7 @@ def maybe_run_assignment_cleanup(conn) -> bool:
             if now - last_cleanup < ASSIGNMENT_CLEANUP_INTERVAL:
                 return False
     release_incomplete_assignments(existing=conn)
-    locked_execute(
+    retryable_execute(
         cur,
         """
         INSERT INTO meta (key, value)
@@ -113,7 +113,7 @@ def assign_next_task(*, run_cleanup: bool = True) -> dict | None:
         cur = conn.cursor()
 
         def assign_discovery() -> dict | None:
-            assigned = locked_execute(
+            assigned = retryable_execute(
                 cur,
                 """
                 WITH candidate AS (
@@ -134,7 +134,7 @@ def assign_next_task(*, run_cleanup: bool = True) -> dict | None:
                 """,
             ).fetchone()
             if not assigned:
-                assigned = locked_execute(
+                assigned = retryable_execute(
                     cur,
                     """
                     WITH candidate AS (
@@ -164,7 +164,7 @@ def assign_next_task(*, run_cleanup: bool = True) -> dict | None:
             }
 
         def restart_discovery_cycle() -> bool:
-            locked_execute(
+            retryable_execute(
                 cur,
                 """
                 UPDATE players
@@ -201,7 +201,7 @@ def assign_next_task(*, run_cleanup: bool = True) -> dict | None:
                     candidate_payload = assign_discovery()
 
             if candidate_payload is None and refresh_due:
-                assigned_row = locked_execute(
+                assigned_row = retryable_execute(
                     cur,
                     """
                     WITH candidate AS (
@@ -230,7 +230,7 @@ def assign_next_task(*, run_cleanup: bool = True) -> dict | None:
                     }
 
             if candidate_payload is None:
-                assigned_row = locked_execute(
+                assigned_row = retryable_execute(
                     cur,
                     """
                     WITH candidate AS (
@@ -265,7 +265,7 @@ def assign_next_task(*, run_cleanup: bool = True) -> dict | None:
 
             if candidate_payload is not None:
                 task_payload = candidate_payload
-                locked_execute(
+                retryable_execute(
                     cur,
                     """
                     INSERT INTO meta (key, value)
@@ -285,7 +285,7 @@ def assign_next_task(*, run_cleanup: bool = True) -> dict | None:
 
     if should_checkpoint:
         with db_connection(write=True) as checkpoint_conn:
-            locked_execute(
+            retryable_execute(
                 checkpoint_conn,
                 "PRAGMA wal_checkpoint(TRUNCATE);",
             )
@@ -344,7 +344,7 @@ def create_app() -> Flask:
                     (steam_account_id,),
                 ).fetchone()
                 hero_done_value = 1 if has_existing_stats else 0
-                locked_execute(
+                retryable_execute(
                     cur,
                     """
                     UPDATE players
@@ -357,7 +357,7 @@ def create_app() -> Flask:
                     (hero_done_value, hero_done_value, steam_account_id),
                 )
             elif task_type == "discover_matches":
-                locked_execute(
+                retryable_execute(
                     cur,
                     """
                     UPDATE players
@@ -369,7 +369,7 @@ def create_app() -> Flask:
                     (steam_account_id,),
                 )
             else:
-                locked_execute(
+                retryable_execute(
                     cur,
                     """
                     UPDATE players
@@ -413,7 +413,7 @@ def create_app() -> Flask:
 
             with db_connection(write=True) as conn:
                 cur = conn.cursor()
-                assignment_row = locked_execute(
+                assignment_row = retryable_execute(
                     cur,
                     "SELECT assigned_at FROM players WHERE steamAccountId=?",
                     (steam_account_id,),
@@ -421,13 +421,13 @@ def create_app() -> Flask:
                 assigned_at_value = (
                     assignment_row["assigned_at"] if assignment_row is not None else None
                 )
-                locked_execute(
+                retryable_execute(
                     cur,
                     "DELETE FROM hero_stats WHERE steamAccountId = ?",
                     (steam_account_id,),
                 )
                 if hero_stats_rows:
-                    locked_executemany(
+                    retryable_executemany(
                         cur,
                         """
                         INSERT INTO hero_stats (steamAccountId, heroId, matches, wins)
@@ -436,7 +436,7 @@ def create_app() -> Flask:
                         hero_stats_rows,
                     )
                 if best_rows:
-                    locked_executemany(
+                    retryable_executemany(
                         cur,
                         """
                         INSERT INTO best (hero_id, hero_name, player_id, matches, wins)
@@ -449,7 +449,7 @@ def create_app() -> Flask:
                         """,
                         best_rows,
                     )
-                locked_execute(
+                retryable_execute(
                     cur,
                     """
                     UPDATE players
@@ -506,7 +506,7 @@ def create_app() -> Flask:
                         except (TypeError, ValueError):
                             parent_depth_value = None
                     if parent_depth_value is None:
-                        parent_row = locked_execute(
+                        parent_row = retryable_execute(
                             cur,
                             "SELECT depth FROM players WHERE steamAccountId=?",
                             (steam_account_id,),
@@ -524,7 +524,7 @@ def create_app() -> Flask:
                     if new_id != steam_account_id
                 ]
                 if child_rows:
-                    locked_executemany(
+                    retryable_executemany(
                         cur,
                         """
                         INSERT INTO players (
@@ -539,7 +539,7 @@ def create_app() -> Flask:
                         """,
                         child_rows,
                     )
-                assignment_row = locked_execute(
+                assignment_row = retryable_execute(
                     cur,
                     "SELECT assigned_at FROM players WHERE steamAccountId=?",
                     (steam_account_id,),
@@ -547,7 +547,7 @@ def create_app() -> Flask:
                 assigned_at_value = (
                     assignment_row["assigned_at"] if assignment_row is not None else None
                 )
-                locked_execute(
+                retryable_execute(
                     cur,
                     """
                     UPDATE players
@@ -607,7 +607,7 @@ def create_app() -> Flask:
         with db_connection(write=True) as conn:
             cur = conn.cursor()
             for pid in range(start, end + 1):
-                locked_execute(
+                retryable_execute(
                     cur,
                     """
                     INSERT OR IGNORE INTO players (
