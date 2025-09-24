@@ -7,6 +7,7 @@ const state = {
 
 const TOKEN_LOG_MAX_ENTRIES = 200;
 const DAY_IN_MS = 86_400_000;
+const NO_TASK_RETRY_DELAY_MS = 100;
 
 const elements = {
   tokenList: document.getElementById("tokenList"),
@@ -1218,7 +1219,10 @@ async function workLoopForToken(token) {
         await resetTask(task).catch(() => {});
         break;
       }
-      await refreshProgress();
+      refreshProgress().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        logToken(token, `Progress refresh failed: ${message}`);
+      });
       recordTaskCompletion(token);
       if (token.requestsRemaining !== null) {
         token.requestsRemaining = Math.max(0, token.requestsRemaining - 1);
@@ -1246,7 +1250,7 @@ async function workLoopForToken(token) {
       updateBackoffDisplay();
       updateTokenDisplay(token);
       if (!task) {
-        await delay(500);
+        await delay(NO_TASK_RETRY_DELAY_MS);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

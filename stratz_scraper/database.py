@@ -84,14 +84,22 @@ def locked_execute(
     #if should_lock:
     #    with FileLock(LOCK_PATH):
     #        return target.execute(sql, parameters)
-    return target.execute(sql, parameters)
+    while True:
+        try:
+            return target.execute(sql, parameters)
+        except:
+            continue
 
 
 def locked_executemany(
     target: sqlite3.Connection | sqlite3.Cursor, sql: str, seq_of_parameters
 ):
-    with FileLock(LOCK_PATH):
-        return target.executemany(sql, seq_of_parameters)
+    #with FileLock(LOCK_PATH):
+    while True:
+        try:
+            return target.executemany(sql, seq_of_parameters)
+        except:
+            continue
 
 
 def ensure_schema(*, lock_acquired: bool = False) -> None:
