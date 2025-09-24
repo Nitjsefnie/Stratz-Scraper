@@ -140,11 +140,19 @@ function formatAverageTaskTime(avgMs) {
   return formatDuration(Math.round(avgMs));
 }
 
-function formatTasksPerDay(avgMs) {
-  if (!Number.isFinite(avgMs) || avgMs <= 0) {
-    return "—";
+function getTokenTasksPerDay(token) {
+  const averageMs = getTokenAverageTaskMs(token);
+  if (!Number.isFinite(averageMs) || averageMs <= 0) {
+    return NaN;
   }
-  const tasksPerDay = DAY_IN_MS / avgMs;
+  const tasksPerDay = DAY_IN_MS / averageMs;
+  if (!Number.isFinite(tasksPerDay) || tasksPerDay <= 0) {
+    return NaN;
+  }
+  return tasksPerDay;
+}
+
+function formatTasksPerDay(tasksPerDay) {
   if (!Number.isFinite(tasksPerDay) || tasksPerDay <= 0) {
     return "—";
   }
@@ -164,24 +172,38 @@ function updateGlobalMetrics() {
 
   let totalRuntime = 0;
   let totalTasks = 0;
+  let totalTasksPerDay = 0;
+  let hasTasksPerDay = false;
 
   state.tokens.forEach((token) => {
     const completed = Number.isFinite(token?.completedTasks) ? token.completedTasks : 0;
     if (!completed) {
       return;
     }
-    totalRuntime += getTokenRuntimeMs(token);
+    const runtime = getTokenRuntimeMs(token);
+    if (runtime <= 0) {
+      return;
+    }
+
+    totalRuntime += runtime;
     totalTasks += completed;
+
+    const tasksPerDay = getTokenTasksPerDay(token);
+    if (Number.isFinite(tasksPerDay) && tasksPerDay > 0) {
+      totalTasksPerDay += tasksPerDay;
+      hasTasksPerDay = true;
+    }
   });
 
   const averageMs = totalTasks > 0 ? totalRuntime / totalTasks : NaN;
+  const expectedTasksPerDay = hasTasksPerDay ? totalTasksPerDay : NaN;
 
   if (elements.avgTaskTimeGlobal) {
     elements.avgTaskTimeGlobal.textContent = formatAverageTaskTime(averageMs);
   }
 
   if (elements.tasksPerDayGlobal) {
-    elements.tasksPerDayGlobal.textContent = formatTasksPerDay(averageMs);
+    elements.tasksPerDayGlobal.textContent = formatTasksPerDay(expectedTasksPerDay);
   }
 }
 
@@ -552,7 +574,8 @@ function updateTokenDisplay(token) {
   }
 
   if (token.dom.tasksPerDayValue) {
-    token.dom.tasksPerDayValue.textContent = formatTasksPerDay(averageMs);
+    const tasksPerDay = getTokenTasksPerDay(token);
+    token.dom.tasksPerDayValue.textContent = formatTasksPerDay(tasksPerDay);
   }
 
   row.classList.toggle("token-row-running", token.running && !token.stopRequested);
