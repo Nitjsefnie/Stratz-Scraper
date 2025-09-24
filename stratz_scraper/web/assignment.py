@@ -235,7 +235,7 @@ def _with_counter(cur, callback: Callable[[int], Tuple[dict | None, bool]]) -> t
     while True:
         next_count = loop_count + 1
         refresh_due = next_count % 10 == 0
-        discovery_due = next_count % 100 == 0
+        discovery_due = next_count % 2000 == 0
         checkpoint_due = next_count % 10000 == 0
 
         candidate_payload, should_truncate_wal = callback(next_count)
