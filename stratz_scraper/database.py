@@ -43,9 +43,48 @@ def db_connection(write: bool = False) -> sqlite3.Connection:
         conn.close()
 
 
-def locked_execute(target: sqlite3.Connection | sqlite3.Cursor, sql: str, parameters=()):
-    with FileLock(LOCK_PATH):
-        return target.execute(sql, parameters)
+SQL_WRITE_KEYWORDS = {
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "REPLACE",
+    "CREATE",
+    "DROP",
+    "ALTER",
+    "PRAGMA",
+    "VACUUM",
+    "REINDEX",
+    "ATTACH",
+    "DETACH",
+    "ANALYZE",
+}
+
+
+def _sql_requires_lock(sql: str) -> bool:
+    stripped = sql.lstrip()
+    if not stripped:
+        return False
+    upper_sql = stripped.upper()
+    first_token = upper_sql.split(None, 1)[0]
+    if first_token == "SELECT":
+        return False
+    if first_token == "WITH":
+        return any(keyword in upper_sql for keyword in SQL_WRITE_KEYWORDS)
+    return True
+
+
+def locked_execute(
+    target: sqlite3.Connection | sqlite3.Cursor,
+    sql: str,
+    parameters=(),
+    *,
+    use_file_lock: bool | None = None,
+):
+    should_lock = _sql_requires_lock(sql) if use_file_lock is None else use_file_lock
+    if should_lock:
+        with FileLock(LOCK_PATH):
+            return target.execute(sql, parameters)
+    return target.execute(sql, parameters)
 
 
 def locked_executemany(
