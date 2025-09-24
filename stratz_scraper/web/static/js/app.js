@@ -6,6 +6,7 @@ const state = {
 };
 
 const TOKEN_LOG_MAX_ENTRIES = 200;
+const DAY_IN_MS = 86_400_000;
 
 const elements = {
   tokenList: document.getElementById("tokenList"),
@@ -26,6 +27,8 @@ const elements = {
   backoffText: document.getElementById("backoffText"),
   statusChip: document.getElementById("runStatus"),
   requestsRemaining: document.getElementById("requestsRemaining"),
+  avgTaskTimeGlobal: document.getElementById("avgTaskTimeGlobal"),
+  tasksPerDayGlobal: document.getElementById("tasksPerDayGlobal"),
 };
 
 function getCookie(name) {
@@ -97,6 +100,89 @@ function formatDuration(ms) {
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
   const minutes = Math.round(ms / 60_000);
   return `${minutes} min`;
+}
+
+function getNowMs() {
+  return Date.now();
+}
+
+function getTokenRuntimeMs(token) {
+  if (!token) {
+    return 0;
+  }
+  const total = Number.isFinite(token.totalRuntimeMs) ? token.totalRuntimeMs : 0;
+  const active =
+    token.running && typeof token.lastStartMs === "number"
+      ? Math.max(0, getNowMs() - token.lastStartMs)
+      : 0;
+  return total + active;
+}
+
+function getTokenAverageTaskMs(token) {
+  if (!token) {
+    return NaN;
+  }
+  const completed = Number.isFinite(token.completedTasks) ? token.completedTasks : 0;
+  if (completed <= 0) {
+    return NaN;
+  }
+  const runtime = getTokenRuntimeMs(token);
+  if (runtime <= 0) {
+    return NaN;
+  }
+  return runtime / completed;
+}
+
+function formatAverageTaskTime(avgMs) {
+  if (!Number.isFinite(avgMs) || avgMs <= 0) {
+    return "—";
+  }
+  return formatDuration(Math.round(avgMs));
+}
+
+function formatTasksPerDay(avgMs) {
+  if (!Number.isFinite(avgMs) || avgMs <= 0) {
+    return "—";
+  }
+  const tasksPerDay = DAY_IN_MS / avgMs;
+  if (!Number.isFinite(tasksPerDay) || tasksPerDay <= 0) {
+    return "—";
+  }
+  if (tasksPerDay >= 100) {
+    return `~${Math.round(tasksPerDay).toLocaleString()}`;
+  }
+  if (tasksPerDay >= 10) {
+    return `~${tasksPerDay.toFixed(1)}`;
+  }
+  return `~${tasksPerDay.toFixed(2)}`;
+}
+
+function updateGlobalMetrics() {
+  if (!elements.avgTaskTimeGlobal && !elements.tasksPerDayGlobal) {
+    return;
+  }
+
+  let totalRuntime = 0;
+  let totalTasks = 0;
+
+  state.tokens.forEach((token) => {
+    const completed = Number.isFinite(token?.completedTasks) ? token.completedTasks : 0;
+    if (!completed) {
+      return;
+    }
+    totalRuntime += getTokenRuntimeMs(token);
+    totalTasks += completed;
+  });
+
+  const averageMs = totalTasks > 0 ? totalRuntime / totalTasks : NaN;
+
+  if (elements.avgTaskTimeGlobal) {
+    elements.avgTaskTimeGlobal.textContent = formatAverageTaskTime(averageMs);
+  }
+
+  if (elements.tasksPerDayGlobal) {
+    elements.tasksPerDayGlobal.textContent = formatTasksPerDay(averageMs);
+  }
 }
 
 function updateBackoffDisplay() {
@@ -460,6 +546,15 @@ function updateTokenDisplay(token) {
     requestsValue.textContent = token.requestsRemaining;
   }
 
+  const averageMs = getTokenAverageTaskMs(token);
+  if (token.dom.avgTaskTimeValue) {
+    token.dom.avgTaskTimeValue.textContent = formatAverageTaskTime(averageMs);
+  }
+
+  if (token.dom.tasksPerDayValue) {
+    token.dom.tasksPerDayValue.textContent = formatTasksPerDay(averageMs);
+  }
+
   row.classList.toggle("token-row-running", token.running && !token.stopRequested);
   row.classList.toggle("token-row-stopping", token.running && token.stopRequested);
 }
@@ -471,6 +566,7 @@ function updateRunningState() {
   updateBackoffDisplay();
   updateRequestsRemainingDisplay();
   state.tokens.forEach((token) => updateTokenDisplay(token));
+  updateGlobalMetrics();
 }
 
 function removeToken(id) {
@@ -510,6 +606,7 @@ function requestStopForToken(token, { silent = false } = {}) {
   if (!silent) {
     logToken(token, "Stop requested.");
   }
+  updateGlobalMetrics();
 }
 
 function addTokenRow(initial = {}, options = {}) {
@@ -529,6 +626,9 @@ function addTokenRow(initial = {}, options = {}) {
     stopRequested: false,
     dom: null,
     logEntries: [],
+    totalRuntimeMs: 0,
+    lastStartMs: null,
+    completedTasks: 0,
   };
   state.tokens.push(token);
   renderTokens();
@@ -548,6 +648,7 @@ function renderTokens() {
     message.className = "muted";
     message.textContent = "No tokens configured.";
     elements.tokenList.appendChild(message);
+    updateGlobalMetrics();
     return;
   }
 
@@ -647,8 +748,16 @@ function renderTokens() {
     const statusItem = createMetaItem("Status");
     const backoffItem = createMetaItem("Backoff");
     const requestsItem = createMetaItem("Requests remaining");
+    const avgTaskItem = createMetaItem("Avg task time");
+    const projectionItem = createMetaItem("Expected in 24h");
 
-    meta.append(statusItem.container, backoffItem.container, requestsItem.container);
+    meta.append(
+      statusItem.container,
+      backoffItem.container,
+      requestsItem.container,
+      avgTaskItem.container,
+      projectionItem.container,
+    );
 
     const logContainer = document.createElement("div");
     logContainer.className = "token-log-container";
@@ -680,10 +789,23 @@ function renderTokens() {
       backoffValue: backoffItem.valueEl,
       requestsValue: requestsItem.valueEl,
       log: logView,
+      avgTaskTimeValue: avgTaskItem.valueEl,
+      tasksPerDayValue: projectionItem.valueEl,
     };
 
     updateTokenDisplay(token);
   });
+  updateGlobalMetrics();
+}
+
+function recordTaskCompletion(token) {
+  if (!token) {
+    return;
+  }
+  const completed = Number.isFinite(token.completedTasks) ? token.completedTasks : 0;
+  token.completedTasks = completed + 1;
+  updateTokenDisplay(token);
+  updateGlobalMetrics();
 }
 
 async function getTask() {
@@ -1013,6 +1135,7 @@ async function workLoopForToken(token) {
   token.activeToken = token.value.trim();
   token.backoff = 1000;
   token.requestsRemaining = parseMaxRequests(token.maxRequests);
+  token.lastStartMs = getNowMs();
   updateTokenDisplay(token);
   updateRunningState();
   logToken(token, "Worker started.");
@@ -1071,6 +1194,7 @@ async function workLoopForToken(token) {
         break;
       }
       await refreshProgress();
+      recordTaskCompletion(token);
       if (token.requestsRemaining !== null) {
         token.requestsRemaining = Math.max(0, token.requestsRemaining - 1);
         updateRequestsRemainingDisplay();
@@ -1138,6 +1262,11 @@ async function workLoopForToken(token) {
         refreshStatusChip();
       }
     }
+  }
+
+  if (typeof token.lastStartMs === "number") {
+    token.totalRuntimeMs += Math.max(0, getNowMs() - token.lastStartMs);
+    token.lastStartMs = null;
   }
 
   token.running = false;
@@ -1224,6 +1353,7 @@ function initialise() {
   loadTokensFromStorage();
   updateBackoffDisplay();
   updateRequestsRemainingDisplay();
+  updateGlobalMetrics();
   refreshStatusChip();
   refreshProgress().catch((error) => log(error.message));
   loadBest().catch((error) => log(error.message));
