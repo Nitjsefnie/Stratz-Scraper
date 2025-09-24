@@ -11,7 +11,7 @@ from ..database import (
     locked_executemany,
     release_incomplete_assignments,
 )
-from ..heroes import HEROES, HERO_SLUGS
+from ..heroes import HEROES, HERO_SLUGS, hero_slug
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -659,6 +659,12 @@ def create_app() -> Flask:
     def best():
         with db_connection() as conn:
             rows = conn.execute("SELECT * FROM best ORDER BY matches DESC").fetchall()
-        return jsonify([dict(row) for row in rows])
+        payload = []
+        for row in rows:
+            row_dict = dict(row)
+            name = row_dict.get("hero_name")
+            row_dict["hero_slug"] = hero_slug(name) if isinstance(name, str) else None
+            payload.append(row_dict)
+        return jsonify(payload)
 
     return app
