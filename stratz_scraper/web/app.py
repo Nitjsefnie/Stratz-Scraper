@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import threading
+import time
 import traceback
 
 from flask import Flask, Response, abort, jsonify, render_template, request
@@ -23,6 +26,14 @@ ASSIGNMENT_CLEANUP_KEY = "last_assignment_cleanup"
 ASSIGNMENT_CLEANUP_INTERVAL = timedelta(seconds=60)
 
 BACKGROUND_EXECUTOR = ThreadPoolExecutor(max_workers=2)
+
+TASK_QUEUE_MAX_SIZE = 200
+TASK_QUEUE_REFILL_THRESHOLD = max(1, TASK_QUEUE_MAX_SIZE // 5)
+
+_TASK_QUEUE: deque[dict] = deque()
+_TASK_QUEUE_CONDITION = threading.Condition()
+_TASK_QUEUE_WORKER_STARTED = False
+_TASK_QUEUE_WORKER_THREAD: threading.Thread | None = None
 
 
 def _parse_sqlite_timestamp(value: str | None) -> datetime | None:
@@ -454,6 +465,80 @@ def assign_next_task(*, run_cleanup: bool = True) -> dict | None:
     return task_payload
 
 
+def _queue_refill_needed_locked() -> bool:
+    return len(_TASK_QUEUE) <= TASK_QUEUE_REFILL_THRESHOLD
+
+
+def _task_queue_worker() -> None:
+    while True:
+        with _TASK_QUEUE_CONDITION:
+            while len(_TASK_QUEUE) > TASK_QUEUE_REFILL_THRESHOLD:
+                _TASK_QUEUE_CONDITION.wait()
+        should_run_cleanup = True
+        produced_any = False
+        while True:
+            with _TASK_QUEUE_CONDITION:
+                current_length = len(_TASK_QUEUE)
+            if current_length >= TASK_QUEUE_MAX_SIZE:
+                break
+            try:
+                task_payload = assign_next_task(run_cleanup=should_run_cleanup)
+            except Exception:
+                traceback.print_exc()
+                time.sleep(1)
+                break
+            should_run_cleanup = False
+            if not task_payload:
+                if not produced_any:
+                    time.sleep(1)
+                break
+            produced_any = True
+            with _TASK_QUEUE_CONDITION:
+                _TASK_QUEUE.append(task_payload)
+                _TASK_QUEUE_CONDITION.notify_all()
+
+
+def _ensure_task_queue_worker() -> None:
+    global _TASK_QUEUE_WORKER_STARTED, _TASK_QUEUE_WORKER_THREAD
+    with _TASK_QUEUE_CONDITION:
+        if _TASK_QUEUE_WORKER_STARTED:
+            return
+        _TASK_QUEUE_WORKER_STARTED = True
+    thread = threading.Thread(target=_task_queue_worker, name="task-queue-worker", daemon=True)
+    _TASK_QUEUE_WORKER_THREAD = thread
+    thread.start()
+
+
+def _get_next_task_from_queue() -> dict | None:
+    with _TASK_QUEUE_CONDITION:
+        if not _TASK_QUEUE:
+            _TASK_QUEUE_CONDITION.notify_all()
+            return None
+        task = _TASK_QUEUE.popleft()
+        if _queue_refill_needed_locked():
+            _TASK_QUEUE_CONDITION.notify_all()
+        return task
+
+
+def _remove_tasks_from_queue(steam_account_id: int, task_type: str | None = None) -> None:
+    with _TASK_QUEUE_CONDITION:
+        if not _TASK_QUEUE:
+            return
+        removed = False
+        remaining: deque[dict] = deque()
+        while _TASK_QUEUE:
+            task = _TASK_QUEUE.popleft()
+            if task.get("steamAccountId") == steam_account_id and (
+                task_type is None or task.get("type") == task_type
+            ):
+                removed = True
+                continue
+            remaining.append(task)
+        _TASK_QUEUE.extend(remaining)
+        if removed and _queue_refill_needed_locked():
+            _TASK_QUEUE_CONDITION.notify_all()
+
+
 def is_local_request() -> bool:
     local_hosts = {"127.0.0.1", "::1"}
     remote_addr = (request.remote_addr or "").strip()
@@ -479,6 +564,7 @@ def create_app() -> Flask:
     )
 
     release_incomplete_assignments()
+    _ensure_task_queue_worker()
 
     @app.get("/")
     def index() -> str:
@@ -486,7 +572,7 @@ def create_app() -> Flask:
 
     @app.post("/task")
     def task():
-        task_payload = assign_next_task()
+        task_payload = _get_next_task_from_queue()
         return jsonify({"task": task_payload})
 
     @app.post("/task/reset")
@@ -540,6 +626,10 @@ def create_app() -> Flask:
                     """,
                     (steam_account_id,),
                 )
+        queue_task_type = (
+            task_type if isinstance(task_type, str) and task_type in {"fetch_hero_stats", "discover_matches"} else None
+        )
+        _remove_tasks_from_queue(steam_account_id, queue_task_type)
         return jsonify({"status": "ok"})
 
     @app.post("/submit")
@@ -611,7 +701,7 @@ def create_app() -> Flask:
                 best_rows,
                 assigned_at_value,
             )
-            next_task = assign_next_task() if request_new_task else None
+            next_task = _get_next_task_from_queue() if request_new_task else None
             response_payload = {"status": "ok"}
             if request_new_task:
                 response_payload["task"] = next_task
@@ -698,7 +788,7 @@ def create_app() -> Flask:
                 next_depth_value,
                 assigned_at_value,
             )
-            next_task = assign_next_task() if request_new_task else None
+            next_task = _get_next_task_from_queue() if request_new_task else None
             response_payload = {"status": "ok"}
             if request_new_task:
                 response_payload["task"] = next_task
