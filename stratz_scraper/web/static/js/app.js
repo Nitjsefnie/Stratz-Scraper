@@ -1341,19 +1341,21 @@ async function workLoopForToken(token) {
           waitMs = Math.min(retryAfterMs, state.maxBackoff);
         }
 
-        await delay(Math.max(0, waitMs));
+        waitMs = Math.max(0, waitMs);
+        token.backoff = waitMs;
+        updateBackoffDisplay();
+        updateTokenDisplay(token);
 
-        if (retryAfterMs !== null) {
-          token.backoff = waitMs;
-        } else {
+        await delay(waitMs);
+
+        if (retryAfterMs === null) {
           token.backoff = Math.min(
             Math.ceil(token.backoff * 1.1),
             state.maxBackoff,
           );
+          updateBackoffDisplay();
+          updateTokenDisplay(token);
         }
-
-        updateBackoffDisplay();
-        updateTokenDisplay(token);
       }
       if (!token.stopRequested) {
         refreshStatusChip();
