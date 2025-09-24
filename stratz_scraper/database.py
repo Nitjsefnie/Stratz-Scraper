@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 import sqlite3
+import time
 
 from .locking import FileLock
 
@@ -88,6 +89,7 @@ def locked_execute(
         try:
             return target.execute(sql, parameters)
         except:
+            time.sleep(0.05)
             continue
 
 
@@ -99,6 +101,7 @@ def locked_executemany(
         try:
             return target.executemany(sql, seq_of_parameters)
         except:
+            time.sleep(0.05)
             continue
 
 
