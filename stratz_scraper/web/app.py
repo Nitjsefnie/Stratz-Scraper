@@ -22,7 +22,7 @@ TEMPLATE_DIR = BASE_DIR / "templates"
 ASSIGNMENT_CLEANUP_KEY = "last_assignment_cleanup"
 ASSIGNMENT_CLEANUP_INTERVAL = timedelta(seconds=60)
 
-BACKGROUND_EXECUTOR = ThreadPoolExecutor(max_workers=2)
+BACKGROUND_EXECUTOR = ThreadPoolExecutor(max_workers=4)
 
 
 def _parse_sqlite_timestamp(value: str | None) -> datetime | None:
