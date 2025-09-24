@@ -837,16 +837,62 @@ async function submitDiscovery(playerId, discovered, depth) {
   return responsePayload?.task ?? null;
 }
 
-async function refreshProgress() {
-  const response = await fetch("/progress");
-  if (!response.ok) {
-    throw new Error(`Progress failed with status ${response.status}`);
+const PROGRESS_REFRESH_INTERVAL = 10000;
+
+const progressState = {
+  lastPayload: null,
+  lastFetchTime: 0,
+  inflight: null,
+};
+
+function updateProgressDisplay(payload) {
+  if (!payload) {
+    return;
   }
-  const payload = await response.json();
   const heroLine = `${payload.hero_done} / ${payload.players_total}`;
   const discoverLine = `${payload.discover_done} / ${payload.players_total}`;
   elements.progressText.textContent = `Hero: ${heroLine} • Discover: ${discoverLine}`;
-  return payload;
+}
+
+async function refreshProgress(options = {}) {
+  const { force = false } = options;
+  const now = Date.now();
+
+  if (!force) {
+    if (progressState.inflight) {
+      const payload = await progressState.inflight;
+      updateProgressDisplay(payload);
+      return payload;
+    }
+    if (
+      progressState.lastPayload &&
+      now - progressState.lastFetchTime < PROGRESS_REFRESH_INTERVAL
+    ) {
+      updateProgressDisplay(progressState.lastPayload);
+      return progressState.lastPayload;
+    }
+  }
+
+  const fetchPromise = (async () => {
+    const response = await fetch("/progress");
+    if (!response.ok) {
+      throw new Error(`Progress failed with status ${response.status}`);
+    }
+    const payload = await response.json();
+    progressState.lastFetchTime = Date.now();
+    progressState.lastPayload = payload;
+    updateProgressDisplay(payload);
+    return payload;
+  })();
+
+  progressState.inflight = fetchPromise;
+  try {
+    return await fetchPromise;
+  } finally {
+    if (progressState.inflight === fetchPromise) {
+      progressState.inflight = null;
+    }
+  }
 }
 
 function renderBestTable(rows) {
