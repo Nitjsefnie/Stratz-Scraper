@@ -1239,7 +1239,7 @@ elements.stop.addEventListener("click", () => {
 });
 
 elements.progress.addEventListener("click", () => {
-  refreshProgress().catch((error) => log(error.message));
+  refreshProgress({ force: true }).catch((error) => log(error.message));
 });
 
 elements.best.addEventListener("click", () => {
