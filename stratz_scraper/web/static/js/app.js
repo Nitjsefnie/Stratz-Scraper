@@ -49,6 +49,46 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function parseRetryAfterHeader(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const seconds = Number.parseFloat(trimmed);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.ceil(seconds * 1000);
+  }
+
+  const retryDateMs = Date.parse(trimmed);
+  if (Number.isFinite(retryDateMs)) {
+    const delta = retryDateMs - Date.now();
+    if (delta > 0) {
+      return Math.ceil(delta);
+    }
+  }
+
+  return null;
+}
+
+function getRetryAfterMsFromError(error) {
+  if (!error) {
+    return null;
+  }
+
+  const value = error.retryAfterMs;
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+
+  const clamped = Math.max(0, Math.ceil(value));
+  return Number.isFinite(clamped) && clamped > 0 ? clamped : null;
+}
+
 const HTML_ESCAPE_MAP = {
   "&": "&amp;",
   "<": "&lt;",
@@ -314,7 +354,15 @@ async function executeStratzQueryWithTokens(query, variables, tokens, startIndex
       });
 
       if (!response.ok) {
-        lastError = new Error(`Stratz API returned ${response.status}`);
+        const error = new Error(`Stratz API returned ${response.status}`);
+        if (response.status === 429) {
+          const retryAfterHeader = response.headers.get("Retry-After");
+          const retryAfterMs = parseRetryAfterHeader(retryAfterHeader);
+          if (retryAfterMs !== null) {
+            error.retryAfterMs = retryAfterMs;
+          }
+        }
+        lastError = error;
         continue;
       }
 
@@ -888,7 +936,15 @@ async function fetchPlayerHeroes(playerId, token) {
   });
 
   if (!response.ok) {
-    throw new Error(`Stratz API returned ${response.status}`);
+    const error = new Error(`Stratz API returned ${response.status}`);
+    if (response.status === 429) {
+      const retryAfterHeader = response.headers.get("Retry-After");
+      const retryAfterMs = parseRetryAfterHeader(retryAfterHeader);
+      if (retryAfterMs !== null) {
+        error.retryAfterMs = retryAfterMs;
+      }
+    }
+    throw error;
   }
 
   const data = await response.json();
@@ -1279,11 +1335,23 @@ async function workLoopForToken(token) {
         updateTokenDisplay(token);
         await delay(wait);
       } else {
-        await delay(token.backoff);
-        token.backoff = Math.min(
-          Math.ceil(token.backoff * 1.1),
-          state.maxBackoff,
-        );
+        const retryAfterMs = getRetryAfterMsFromError(error);
+        let waitMs = token.backoff;
+        if (retryAfterMs !== null) {
+          waitMs = Math.min(retryAfterMs, state.maxBackoff);
+        }
+
+        await delay(Math.max(0, waitMs));
+
+        if (retryAfterMs !== null) {
+          token.backoff = waitMs;
+        } else {
+          token.backoff = Math.min(
+            Math.ceil(token.backoff * 1.1),
+            state.maxBackoff,
+          );
+        }
+
         updateBackoffDisplay();
         updateTokenDisplay(token);
       }
