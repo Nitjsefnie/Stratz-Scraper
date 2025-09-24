@@ -356,7 +356,7 @@ async function executeStratzQueryWithTokens(query, variables, tokens, startIndex
       if (!response.ok) {
         const error = new Error(`Stratz API returned ${response.status}`);
         if (response.status === 429) {
-          const retryAfterHeader = response.headers.get("Retry-After");
+          const retryAfterHeader = response.headers.get("retry-after");
           const retryAfterMs = parseRetryAfterHeader(retryAfterHeader);
           if (retryAfterMs !== null) {
             error.retryAfterMs = retryAfterMs;
@@ -938,7 +938,7 @@ async function fetchPlayerHeroes(playerId, token) {
   if (!response.ok) {
     const error = new Error(`Stratz API returned ${response.status}`);
     if (response.status === 429) {
-      const retryAfterHeader = response.headers.get("Retry-After");
+      const retryAfterHeader = response.headers.get("retry-after");
       const retryAfterMs = parseRetryAfterHeader(retryAfterHeader);
       if (retryAfterMs !== null) {
         error.retryAfterMs = retryAfterMs;

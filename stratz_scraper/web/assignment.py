@@ -131,7 +131,7 @@ def assign_next_task(*, run_cleanup: bool = True) -> dict | None:
 
         def callback(next_count: int) -> Tuple[dict | None, bool]:
             refresh_due = next_count % 10 == 0
-            discovery_due = next_count % 100 == 0
+            discovery_due = next_count % 2000 == 0
             should_truncate_wal = False
             candidate_payload = None
 
