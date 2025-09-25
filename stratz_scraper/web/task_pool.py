@@ -55,13 +55,27 @@ class TaskPool:
     def get(self) -> Optional[dict]:
         """Return the next pre-generated task, refilling in the background."""
 
+        retrieved_from_queue = False
         try:
             task = self._queue.get_nowait()
+            retrieved_from_queue = True
         except queue.Empty:
-            task = assign_next_task()
-        else:
-            if self._queue.qsize() <= self._refill_threshold:
-                self._refill_event.set()
+            self._refill_event.set()
+            try:
+                task = self._queue.get(timeout=self._retry_interval)
+            except queue.Empty:
+                task = assign_next_task()
+                if task is None:
+                    try:
+                        task = self._queue.get_nowait()
+                        retrieved_from_queue = True
+                    except queue.Empty:
+                        pass
+            else:
+                retrieved_from_queue = True
+
+        if retrieved_from_queue and self._queue.qsize() <= self._refill_threshold:
+            self._refill_event.set()
         if task is None:
             # Ensure we keep trying to find new tasks when available.
             self._refill_event.set()
