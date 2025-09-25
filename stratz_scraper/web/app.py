@@ -8,7 +8,6 @@ from flask import Flask, Response, abort, jsonify, render_template, request
 
 from ..database import db_connection, retryable_execute, release_incomplete_assignments
 from ..heroes import HEROES
-from .assignment import assign_next_task
 from .config import STATIC_DIR, TEMPLATE_DIR
 from .leaderboard import fetch_best_payload, fetch_hero_leaderboard
 from .progress import fetch_progress
@@ -16,6 +15,7 @@ from .request_utils import is_local_request
 from .seed import seed_players
 from .submissions import submit_discover_submission, submit_hero_submission
 from .tasks import reset_player_task
+from .task_pool import TaskPool
 
 __all__ = ["create_app"]
 
@@ -88,6 +88,7 @@ def create_app() -> Flask:
     )
 
     release_incomplete_assignments()
+    task_pool = TaskPool()
 
     @app.get("/")
     def index() -> str:
@@ -95,7 +96,7 @@ def create_app() -> Flask:
 
     @app.post("/task")
     def task():
-        task_payload = assign_next_task()
+        task_payload = task_pool.get()
         return jsonify({"task": task_payload})
 
     @app.post("/task/reset")
@@ -159,7 +160,7 @@ def create_app() -> Flask:
                 best_rows,
                 assigned_at_value,
             )
-            next_task = assign_next_task() if request_new_task else None
+            next_task = task_pool.get() if request_new_task else None
             response_payload = {"status": "ok"}
             if request_new_task:
                 response_payload["task"] = next_task
@@ -203,7 +204,7 @@ def create_app() -> Flask:
                 next_depth_value,
                 assigned_at_value,
             )
-            next_task = assign_next_task() if request_new_task else None
+            next_task = task_pool.get() if request_new_task else None
             response_payload = {"status": "ok"}
             if request_new_task:
                 response_payload["task"] = next_task
