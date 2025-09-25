@@ -229,6 +229,13 @@ def ensure_indexes(*, lock_acquired: bool = False) -> None:
                         assigned_to,
                         assigned_at
                     );
+                CREATE INDEX IF NOT EXISTS idx_hero_stats_leaderboard
+                    ON hero_stats (
+                        heroId,
+                        matches DESC,
+                        wins DESC,
+                        steamAccountId
+                    );
                 """
             )
     _INDEXES_ENSURED = True
