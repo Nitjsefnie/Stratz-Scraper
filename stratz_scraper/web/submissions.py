@@ -209,7 +209,11 @@ def process_discover_submission(
                     )
                     VALUES (?,?,0,0,?)
                     ON CONFLICT(steamAccountId) DO UPDATE SET
-                        depth=excluded.depth,
+                        depth=CASE
+                            WHEN players.depth IS NULL THEN excluded.depth
+                            WHEN excluded.depth < players.depth THEN excluded.depth
+                            ELSE players.depth
+                        END,
                         seen_count=players.seen_count + excluded.seen_count
                     """,
                     child_rows,
