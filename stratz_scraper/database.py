@@ -99,16 +99,30 @@ def retryable_execute(
 def retryable_executemany(
     target: sqlite3.Connection | sqlite3.Cursor, sql: str, seq_of_parameters
 ):
-    #with FileLock(LOCK_PATH):
+    if not isinstance(seq_of_parameters, (list, tuple)):
+        seq_of_parameters = list(seq_of_parameters)
+    connection = target if isinstance(target, sqlite3.Connection) else target.connection
     while True:
         try:
-            return target.executemany(sql, seq_of_parameters)
+            connection.execute("BEGIN IMMEDIATE")
+            break
         except sqlite3.OperationalError as exc:
             message = str(exc).lower()
             if "locked" in message or "busy" in message:
                 time.sleep(0.05)
                 continue
             raise
+
+    try:
+        result = target.executemany(sql, seq_of_parameters)
+        connection.execute("COMMIT")
+        return result
+    except Exception:
+        try:
+            connection.execute("ROLLBACK")
+        except sqlite3.OperationalError:
+            pass
+        raise
 
 
 def ensure_schema(*, lock_acquired: bool = False) -> None:
