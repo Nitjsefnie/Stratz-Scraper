@@ -128,6 +128,8 @@ def assign_next_task(*, run_cleanup: bool = True) -> dict | None:
     with db_connection(write=True) as conn:
         if run_cleanup:
             maybe_run_assignment_cleanup(conn)
+
+        retryable_execute(conn, "BEGIN IMMEDIATE")
         cur = conn.cursor()
 
         def callback(next_count: int) -> Tuple[dict | None, bool]:
@@ -208,7 +210,13 @@ def assign_next_task(*, run_cleanup: bool = True) -> dict | None:
 
             return candidate_payload, should_truncate_wal
 
-        task_payload, should_checkpoint = _with_counter(cur, callback)
+        try:
+            task_payload, should_checkpoint = _with_counter(cur, callback)
+        except Exception:
+            conn.rollback()
+            raise
+        else:
+            conn.commit()
 
     if should_checkpoint:
         with db_connection(write=True) as checkpoint_conn:
