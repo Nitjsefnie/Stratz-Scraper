@@ -111,6 +111,7 @@ def _restart_discovery_cycle(cur) -> bool:
         """
         UPDATE players
         SET discover_done=0,
+            seen_count=0,
             depth=CASE WHEN depth=0 THEN 0 ELSE NULL END,
             assigned_at=CASE WHEN assigned_to='discover' THEN NULL ELSE assigned_at END,
             assigned_to=CASE WHEN assigned_to='discover' THEN NULL ELSE assigned_to END
