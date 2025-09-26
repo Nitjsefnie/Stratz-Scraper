@@ -63,7 +63,7 @@ def _assign_discovery(cur) -> dict | None:
             WHERE hero_done=1
               AND discover_done=0
               AND assigned_to IS NULL
-            ORDER BY COALESCE(depth, 0) ASC, steamAccountId ASC
+            ORDER BY seen_count DESC, COALESCE(depth, 0) ASC, steamAccountId ASC
             LIMIT 1
         )
         UPDATE players
@@ -84,7 +84,7 @@ def _assign_discovery(cur) -> dict | None:
                 WHERE hero_done=1
                   AND discover_done=0
                   AND assigned_to='discover'
-                ORDER BY COALESCE(depth, 0) ASC, steamAccountId ASC
+                ORDER BY seen_count DESC, COALESCE(depth, 0) ASC, steamAccountId ASC
                 LIMIT 1
             )
             UPDATE players
@@ -150,7 +150,8 @@ def assign_next_task(*, run_cleanup: bool = True) -> dict | None:
                         FROM players
                         WHERE hero_done=1
                           AND assigned_to IS NULL
-                        ORDER BY COALESCE(hero_refreshed_at, '1970-01-01') ASC,
+                        ORDER BY seen_count DESC,
+                                 COALESCE(hero_refreshed_at, '1970-01-01') ASC,
                                  steamAccountId ASC
                         LIMIT 1
                     )
@@ -179,7 +180,7 @@ def assign_next_task(*, run_cleanup: bool = True) -> dict | None:
                         FROM players
                         WHERE hero_done=0
                           AND assigned_to IS NULL
-                        ORDER BY COALESCE(depth, 0) ASC, steamAccountId ASC
+                        ORDER BY seen_count DESC, COALESCE(depth, 0) ASC, steamAccountId ASC
                         LIMIT 1
                     )
                     UPDATE players
