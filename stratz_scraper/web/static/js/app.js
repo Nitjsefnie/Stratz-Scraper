@@ -319,7 +319,6 @@ async function executeStratzQuery(query, variables, token) {
     headers: {
       Authorization: `Bearer ${activeToken}`,
       "Content-Type": "application/json",
-      "User-Agent": "STRATZ_API",
     },
     body: JSON.stringify({ query, variables }),
   });
@@ -893,7 +892,6 @@ async function fetchPlayerHeroes(playerId, token) {
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
-      'User-Agent': 'STRATZ_API',
     },
     body: JSON.stringify({ query, variables: { id: playerId } }),
   });
