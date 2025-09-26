@@ -1259,7 +1259,7 @@ async function workLoopForToken(token) {
         }
       }
       task = nextTask ?? null;
-      token.backoff = 1000;
+      token.backoff = 10000;
       updateBackoffDisplay();
       updateTokenDisplay(token);
       if (!task) {
@@ -1307,7 +1307,7 @@ async function workLoopForToken(token) {
 
         if (retryAfterMs === null) {
           token.backoff = Math.min(
-            Math.ceil(token.backoff * 1.1),
+            Math.ceil(token.backoff * 1.2),
             state.maxBackoff,
           );
           updateBackoffDisplay();
@@ -1326,7 +1326,7 @@ async function workLoopForToken(token) {
   }
 
   token.running = false;
-  token.backoff = 1000;
+  token.backoff = 10000;
   token.activeToken = null;
   token.stopRequested = false;
   token.requestsRemaining = parseMaxRequests(token.maxRequests);
