@@ -133,7 +133,8 @@ def ensure_schema(*, lock_acquired: bool = False) -> None:
                     assigned_at DATETIME,
                     hero_refreshed_at DATETIME,
                     hero_done INTEGER DEFAULT 0,
-                    discover_done INTEGER DEFAULT 0
+                    discover_done INTEGER DEFAULT 0,
+                    seen_count INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE TABLE hero_stats (
@@ -186,6 +187,17 @@ def ensure_indexes(*, lock_acquired: bool = False) -> None:
     with lock_ctx:
         with sqlite3.connect(DB_PATH, timeout=30, isolation_level=None) as conn:
             conn.execute("PRAGMA busy_timeout = 5000")
+            try:
+                conn.execute(
+                    "ALTER TABLE players ADD COLUMN seen_count INTEGER NOT NULL DEFAULT 0"
+                )
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                if "duplicate column name" not in message:
+                    raise
+            conn.execute(
+                "UPDATE players SET seen_count=0 WHERE seen_count IS NULL"
+            )
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS task_durations (
@@ -209,10 +221,26 @@ def ensure_indexes(*, lock_acquired: bool = False) -> None:
                         COALESCE(depth, 0),
                         steamAccountId
                     );
+                CREATE INDEX IF NOT EXISTS idx_players_hero_queue_seen
+                    ON players (
+                        hero_done,
+                        assigned_to,
+                        seen_count DESC,
+                        COALESCE(depth, 0),
+                        steamAccountId
+                    );
                 CREATE INDEX IF NOT EXISTS idx_players_hero_refresh
                     ON players (
                         hero_done,
                         assigned_to,
+                        COALESCE(hero_refreshed_at, '1970-01-01'),
+                        steamAccountId
+                    );
+                CREATE INDEX IF NOT EXISTS idx_players_hero_refresh_seen
+                    ON players (
+                        hero_done,
+                        assigned_to,
+                        seen_count DESC,
                         COALESCE(hero_refreshed_at, '1970-01-01'),
                         steamAccountId
                     );
@@ -221,6 +249,15 @@ def ensure_indexes(*, lock_acquired: bool = False) -> None:
                         hero_done,
                         discover_done,
                         assigned_to,
+                        COALESCE(depth, 0),
+                        steamAccountId
+                    );
+                CREATE INDEX IF NOT EXISTS idx_players_discover_queue_seen
+                    ON players (
+                        hero_done,
+                        discover_done,
+                        assigned_to,
+                        seen_count DESC,
                         COALESCE(depth, 0),
                         steamAccountId
                     );

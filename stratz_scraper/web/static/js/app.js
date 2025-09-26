@@ -983,7 +983,7 @@ async function discoverMatches(playerId, token, { take = 100, skip = 0 } = {}) {
     }
   `;
 
-  const discovered = new Set();
+  const discovered = new Map();
   let nextSkip = startingSkip;
   let tokenIndex = 0;
 
@@ -1013,7 +1013,8 @@ async function discoverMatches(playerId, token, { take = 100, skip = 0 } = {}) {
               ? Number.parseInt(rawId, 10)
               : null;
         if (Number.isFinite(id) && id !== playerId) {
-          discovered.add(id);
+          const previous = discovered.get(id) ?? 0;
+          discovered.set(id, previous + 1);
         }
       });
     });
@@ -1026,7 +1027,10 @@ async function discoverMatches(playerId, token, { take = 100, skip = 0 } = {}) {
     tokenIndex = (usedIndex + 1) % tokens.length;
   }
 
-  return Array.from(discovered);
+  return Array.from(discovered, ([steamAccountId, count]) => ({
+    steamAccountId,
+    count,
+  }));
 }
 
 async function submitHeroStats(playerId, heroes) {

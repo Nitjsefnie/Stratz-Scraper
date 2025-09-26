@@ -40,19 +40,47 @@ def _extract_hero_rows(steam_account_id: int, heroes_payload: Iterable[dict]) ->
     return hero_stats_rows, best_rows
 
 
-def _extract_discovered_ids(values: Iterable[int]) -> List[int]:
-    discovered_ids: List[int] = []
-    seen_ids: set[int] = set()
+def _extract_discovered_counts(values: Iterable[object]) -> List[tuple[int, int]]:
+    aggregated: dict[int, int] = {}
+    order: List[int] = []
     for value in values:
+        candidate_id = None
+        count_value = 1
+        if isinstance(value, dict):
+            candidate_id = value.get("steamAccountId")
+            if candidate_id is None:
+                candidate_id = value.get("id")
+            count_raw = value.get("count")
+            if count_raw is None:
+                count_raw = value.get("seenCount")
+            if count_raw is not None:
+                try:
+                    count_value = int(count_raw)
+                except (TypeError, ValueError):
+                    count_value = 0
+        else:
+            candidate_id = value
         try:
-            candidate_id = int(value)
+            candidate_id = int(candidate_id)
         except (TypeError, ValueError):
             continue
-        if candidate_id in seen_ids:
+        if candidate_id <= 0:
             continue
-        seen_ids.add(candidate_id)
-        discovered_ids.append(candidate_id)
-    return discovered_ids
+        if count_value is None:
+            count_value = 0
+        if not isinstance(count_value, int):
+            try:
+                count_value = int(count_value)
+            except (TypeError, ValueError):
+                count_value = 0
+        if count_value <= 0:
+            continue
+        if candidate_id not in aggregated:
+            aggregated[candidate_id] = count_value
+            order.append(candidate_id)
+        else:
+            aggregated[candidate_id] += count_value
+    return [(pid, aggregated[pid]) for pid in order]
 
 
 def _resolve_next_depth(data: dict, assignment_row) -> int:
@@ -169,7 +197,7 @@ def create_app() -> Flask:
                 steam_account_id = int(data["steamAccountId"])
             except (KeyError, TypeError, ValueError):
                 return jsonify({"status": "error", "message": "steamAccountId is required"}), 400
-            discovered_ids = _extract_discovered_ids(data.get("discovered", []))
+            discovered_counts = _extract_discovered_counts(data.get("discovered", []))
             assigned_at_value = None
             with db_connection(write=True) as conn:
                 cur = conn.cursor()
@@ -199,7 +227,7 @@ def create_app() -> Flask:
                 )
             submit_discover_submission(
                 steam_account_id,
-                discovered_ids,
+                discovered_counts,
                 next_depth_value,
                 assigned_at_value,
             )

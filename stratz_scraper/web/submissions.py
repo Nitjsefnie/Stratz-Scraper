@@ -184,7 +184,7 @@ def process_hero_submission(
 
 def process_discover_submission(
     steam_account_id: int,
-    discovered_ids: Iterable[int],
+    discovered_counts: Iterable[tuple[int, int]],
     next_depth_value: int,
     assigned_at_value: str | None,
 ) -> None:
@@ -192,9 +192,9 @@ def process_discover_submission(
         with db_connection(write=True) as conn:
             cur = conn.cursor()
             child_rows = [
-                (new_id, next_depth_value)
-                for new_id in discovered_ids
-                if new_id != steam_account_id
+                (new_id, next_depth_value, max(count, 0))
+                for new_id, count in discovered_counts
+                if new_id != steam_account_id and count > 0
             ]
             if child_rows:
                 retryable_executemany(
@@ -204,11 +204,13 @@ def process_discover_submission(
                         steamAccountId,
                         depth,
                         hero_done,
-                        discover_done
+                        discover_done,
+                        seen_count
                     )
-                    VALUES (?,?,0,0)
+                    VALUES (?,?,0,0,?)
                     ON CONFLICT(steamAccountId) DO UPDATE SET
-                        depth=excluded.depth
+                        depth=excluded.depth,
+                        seen_count=players.seen_count + excluded.seen_count
                     """,
                     child_rows,
                 )
@@ -257,14 +259,14 @@ def submit_hero_submission(
 
 def submit_discover_submission(
     steam_account_id: int,
-    discovered_ids: Iterable[int],
+    discovered_counts: Iterable[tuple[int, int]],
     next_depth_value: int,
     assigned_at_value: str | None,
 ) -> None:
     BACKGROUND_EXECUTOR.submit(
         process_discover_submission,
         steam_account_id,
-        tuple(discovered_ids),
+        tuple(discovered_counts),
         next_depth_value,
         assigned_at_value,
     )
