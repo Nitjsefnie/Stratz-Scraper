@@ -308,81 +308,44 @@ function parseMaxRequests(value) {
   return Number.isFinite(max) && max > 0 ? max : null;
 }
 
-function gatherStratzTokens(preferredToken) {
-  const tokens = [];
-  const seen = new Set();
-
-  const addToken = (value) => {
-    if (typeof value !== "string") {
-      return;
-    }
-    const trimmed = value.trim();
-    if (trimmed.length === 0 || seen.has(trimmed)) {
-      return;
-    }
-    seen.add(trimmed);
-    tokens.push(trimmed);
-  };
-
-  addToken(preferredToken ?? "");
-  state.tokens.forEach((entry) => addToken(entry.value));
-
-  return tokens;
-}
-
-async function executeStratzQueryWithTokens(query, variables, tokens, startIndex = 0) {
-  if (!Array.isArray(tokens) || tokens.length === 0) {
+async function executeStratzQuery(query, variables, token) {
+  const activeToken = typeof token === "string" ? token.trim() : "";
+  if (!activeToken) {
     throw new Error("Stratz token is not set");
   }
 
-  const total = tokens.length;
-  let lastError = null;
+  const response = await fetch("https://api.stratz.com/graphql", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${activeToken}`,
+      "Content-Type": "application/json",
+      "User-Agent": "STRATZ_API",
+    },
+    body: JSON.stringify({ query, variables }),
+  });
 
-  for (let offset = 0; offset < total; offset += 1) {
-    const tokenIndex = (startIndex + offset) % total;
-    const candidateToken = tokens[tokenIndex];
-
-    try {
-      const response = await fetch("https://api.stratz.com/graphql", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${candidateToken}`,
-          "Content-Type": "application/json",
-          "User-Agent": "STRATZ_API",
-        },
-        body: JSON.stringify({ query, variables }),
-      });
-
-      if (!response.ok) {
-        const error = new Error(`Stratz API returned ${response.status}`);
-        if (response.status === 429) {
-          const retryAfterHeader = response.headers.get("retry-after");
-          const retryAfterMs = parseRetryAfterHeader(retryAfterHeader);
-          if (retryAfterMs !== null) {
-            error.retryAfterMs = retryAfterMs;
-          }
-        }
-        lastError = error;
-        continue;
+  if (!response.ok) {
+    const error = new Error(`Stratz API returned ${response.status}`);
+    if (response.status === 429) {
+      const retryAfterHeader = response.headers.get("retry-after");
+      const retryAfterMs = parseRetryAfterHeader(retryAfterHeader);
+      if (retryAfterMs !== null) {
+        error.retryAfterMs = retryAfterMs;
       }
-
-      const payload = await response.json();
-
-      if (payload && Array.isArray(payload.errors) && payload.errors.length > 0) {
-        const message = payload.errors
-          .map((error) => (typeof error?.message === "string" ? error.message : null))
-          .find((msg) => msg);
-        lastError = new Error(message ?? "Stratz API returned errors");
-        continue;
-      }
-
-      return { payload, tokenIndex };
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
     }
+    throw error;
   }
 
-  throw lastError ?? new Error("Stratz request failed");
+  const payload = await response.json();
+
+  if (payload && Array.isArray(payload.errors) && payload.errors.length > 0) {
+    const message = payload.errors
+      .map((error) => (typeof error?.message === "string" ? error.message : null))
+      .find((msg) => msg);
+    throw new Error(message ?? "Stratz API returned errors");
+  }
+
+  return payload;
 }
 
 function persistTokens() {
@@ -965,11 +928,6 @@ async function discoverMatches(playerId, token, { take = 100, skip = 0 } = {}) {
   const pageSize = Math.max(1, pageSizeCandidate);
   const startingSkip = Number.isFinite(skip) && skip > 0 ? Math.floor(skip) : 0;
 
-  const tokens = gatherStratzTokens(token);
-  if (!tokens.length) {
-    throw new Error("Stratz token is not set");
-  }
-
   const query = `
     query PlayerMatches($steamAccountId: Long!, $take: Int!, $skip: Int!) {
       player(steamAccountId: $steamAccountId) {
@@ -985,14 +943,12 @@ async function discoverMatches(playerId, token, { take = 100, skip = 0 } = {}) {
 
   const discovered = new Map();
   let nextSkip = startingSkip;
-  let tokenIndex = 0;
 
   while (true) {
-    const { payload, tokenIndex: usedIndex } = await executeStratzQueryWithTokens(
+    const payload = await executeStratzQuery(
       query,
       { steamAccountId: playerId, take: pageSize, skip: nextSkip },
-      tokens,
-      tokenIndex,
+      token,
     );
 
     const matches = payload?.data?.player?.matches;
@@ -1024,7 +980,6 @@ async function discoverMatches(playerId, token, { take = 100, skip = 0 } = {}) {
     }
 
     nextSkip += matches.length;
-    tokenIndex = (usedIndex + 1) % tokens.length;
   }
 
   return Array.from(discovered, ([steamAccountId, count]) => ({
