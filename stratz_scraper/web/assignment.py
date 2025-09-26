@@ -153,8 +153,8 @@ def assign_next_task(*, run_cleanup: bool = True) -> dict | None:
                         FROM players
                         WHERE hero_done=1
                           AND assigned_to IS NULL
-                        ORDER BY seen_count DESC,
-                                 COALESCE(hero_refreshed_at, '1970-01-01') ASC,
+                        ORDER BY COALESCE(hero_refreshed_at, '1970-01-01') ASC,
+                                 seen_count DESC,
                                  steamAccountId ASC
                         LIMIT 1
                     )
