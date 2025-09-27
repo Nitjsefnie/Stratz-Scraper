@@ -18,14 +18,8 @@ NO_TASK_RETRY_DELAY_MS = 100
 TASK_RESET_TIMEOUT = 10
 DEFAULT_STRATZ_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:143.0) Gecko/20100101 Firefox/143.0",
-    "Accept": "*/*",
-    "Accept-Language": "en-GB,en;q=0.5",
-    "Accept-Encoding": "gzip, deflate, br, zstd",
-    "Connection": "keep-alive",
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "cross-site",
-    "Priority": "u=4",
+    "Accept": "application/json",
+    "Content-Type": "application/json",
 }
 
 
@@ -189,9 +183,6 @@ def _execute_stratz_query(session: requests.Session, token: str, query: str, var
     headers = {
         **DEFAULT_STRATZ_HEADERS,
         "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "apollographql-client-name": "web",
-        "apollographql-client-version": "1.0"
     }
     print("POST headers:", headers)
     print("POST body:", {"query": query, "variables": variables})
