@@ -21,8 +21,6 @@ DEFAULT_STRATZ_HEADERS = {
     "Accept": "*/*",
     "Accept-Language": "en-GB,en;q=0.5",
     "Accept-Encoding": "gzip, deflate, br, zstd",
-    "Referer": "http://scraper.nitjsefni.eu/",
-    "Origin": "http://scraper.nitjsefni.eu",
     "Connection": "keep-alive",
     "Sec-Fetch-Dest": "empty",
     "Sec-Fetch-Mode": "cors",
@@ -192,10 +190,11 @@ def _execute_stratz_query(session: requests.Session, token: str, query: str, var
         **DEFAULT_STRATZ_HEADERS,
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
-        "Accept": session.headers.get("Accept", "*/*"),
         "apollographql-client-name": "web",
         "apollographql-client-version": "1.0"
     }
+    print("POST headers:", headers)
+    print("POST body:", {"query": query, "variables": variables})
     response = session.post(
         "https://api.stratz.com/graphql",
         headers=headers,
