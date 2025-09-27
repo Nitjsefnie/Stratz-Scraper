@@ -78,13 +78,15 @@ A cross-platform PyQt client replaces the previous browser interface. The deskto
 
 3. Enter your Stratz API tokens, optionally set request limits, and press **Start**. Each token spawns an isolated worker process that communicates with the Flask backend and the Stratz GraphQL API without blocking the interface.
 
+Additional toolbar buttons let you import or export the complete token list to JSON, making it easy to move configurations between machines.
+
 ### Building a Windows executable
 
 The repository ships with a GitHub Actions workflow (`build-client`) that packages the client with PyInstaller on `windows-latest`. To build locally run:
 
 ```bash
 python -m pip install pyinstaller
-pyinstaller --noconfirm --windowed --name StratzScraperClient stratz_scraper/client/__main__.py
+pyinstaller --noconfirm --windowed --onefile --name StratzScraperClient stratz_scraper/client/__main__.py
 ```
 
 The workflow output is published as the `StratzScraperClient-windows` artifact on every push and pull request.

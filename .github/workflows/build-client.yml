@@ -29,10 +29,10 @@ jobs:
         run: |
           if (Test-Path dist) { Remove-Item -Recurse -Force dist }
           if (Test-Path build) { Remove-Item -Recurse -Force build }
-          pyinstaller --noconfirm --windowed --name StratzScraperClient stratz_scraper/client/__main__.py
+          pyinstaller --noconfirm --windowed --onefile --name StratzScraperClient stratz_scraper/client/__main__.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: StratzScraperClient-windows
-          path: dist/StratzScraperClient
+          path: dist/StratzScraperClient.exe

@@ -185,12 +185,18 @@ class ClientWindow(QMainWindow):
 
         controls_layout = QHBoxLayout()
         self.add_token_button = QPushButton("Add Token")
-        self.add_token_button.clicked.connect(self.add_token_row)
+        self.add_token_button.clicked.connect(lambda: self.add_token_row())
+        self.import_tokens_button = QPushButton("Import Tokens…")
+        self.import_tokens_button.clicked.connect(lambda: self.import_tokens())
+        self.export_tokens_button = QPushButton("Export Tokens…")
+        self.export_tokens_button.clicked.connect(lambda: self.export_tokens())
         self.start_all_button = QPushButton("Start All")
-        self.start_all_button.clicked.connect(self.start_all_tokens)
+        self.start_all_button.clicked.connect(lambda: self.start_all_tokens())
         self.stop_all_button = QPushButton("Stop All")
-        self.stop_all_button.clicked.connect(self.stop_all_tokens)
+        self.stop_all_button.clicked.connect(lambda: self.stop_all_tokens())
         controls_layout.addWidget(self.add_token_button)
+        controls_layout.addWidget(self.import_tokens_button)
+        controls_layout.addWidget(self.export_tokens_button)
         controls_layout.addWidget(self.start_all_button)
         controls_layout.addWidget(self.stop_all_button)
         controls_layout.addStretch(1)
@@ -247,10 +253,16 @@ class ClientWindow(QMainWindow):
         self.setCentralWidget(central)
 
     # ----- Token management -----
-    def add_token_row(self, value: str = "", max_requests: Optional[int] = None, persist: bool = True) -> None:
+    def add_token_row(
+        self,
+        value: str = "",
+        max_requests: Optional[int] = None,
+        persist: bool = True,
+    ) -> None:
         token_id = f"token-{self.token_counter}"
         self.token_counter += 1
-        item = TokenItem(identifier=token_id, value=value.strip(), max_requests=max_requests)
+        token_value = value.strip() if isinstance(value, str) else ""
+        item = TokenItem(identifier=token_id, value=token_value, max_requests=max_requests)
         row = self.table.rowCount()
         self.table.insertRow(row)
 
@@ -325,7 +337,7 @@ class ClientWindow(QMainWindow):
         self._update_status_display(item)
         self._update_global_metrics()
 
-    def remove_token(self, item: TokenItem) -> None:
+    def remove_token(self, item: TokenItem, *_: object) -> None:
         if item.running:
             QMessageBox.warning(self, "Token running", "Stop the worker before removing the token.")
             return
@@ -340,7 +352,7 @@ class ClientWindow(QMainWindow):
         self._update_global_metrics()
         self._append_log(f"Removed token #{row + 1}.")
 
-    def start_token(self, item: TokenItem) -> None:
+    def start_token(self, item: TokenItem, *_: object) -> None:
         if item.running:
             return
         token_value = item.value.strip()
@@ -369,7 +381,7 @@ class ClientWindow(QMainWindow):
         self._update_controls()
         self._update_global_metrics()
 
-    def stop_token(self, item: TokenItem) -> None:
+    def stop_token(self, item: TokenItem, *_: object) -> None:
         if not item.worker or not item.worker.is_alive():
             return
         if item.stop_event and not item.stop_event.is_set():
@@ -380,12 +392,12 @@ class ClientWindow(QMainWindow):
         self._update_controls()
         self._update_global_metrics()
 
-    def start_all_tokens(self) -> None:
+    def start_all_tokens(self, *_: object) -> None:
         for item in self.tokens:
             if not item.running and item.value.strip():
                 self.start_token(item)
 
-    def stop_all_tokens(self) -> None:
+    def stop_all_tokens(self, *_: object) -> None:
         for item in self.tokens:
             self.stop_token(item)
 
@@ -438,7 +450,7 @@ class ClientWindow(QMainWindow):
                     if isinstance(token_value, str):
                         self.add_token_row(token_value, max_int, persist=False)
 
-    def import_tokens(self) -> None:
+    def import_tokens(self, *_: object) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Import Tokens", os.getcwd(), "JSON Files (*.json)")
         if not path:
             return
@@ -469,7 +481,7 @@ class ClientWindow(QMainWindow):
         self._update_global_metrics()
         QMessageBox.information(self, "Import complete", f"Imported {imported} token(s).")
 
-    def export_tokens(self) -> None:
+    def export_tokens(self, *_: object) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "Export Tokens", os.getcwd(), "JSON Files (*.json)")
         if not path:
             return
@@ -685,7 +697,7 @@ class ClientWindow(QMainWindow):
             return "http://127.0.0.1:80"
         return value.rstrip("/")
 
-    def refresh_progress(self) -> None:
+    def refresh_progress(self, *_: object) -> None:
         import requests
 
         try:
@@ -705,7 +717,7 @@ class ClientWindow(QMainWindow):
         else:
             self.progress_label.setText("Progress: unavailable")
 
-    def load_best(self) -> None:
+    def load_best(self, *_: object) -> None:
         import requests
 
         try:
@@ -730,7 +742,7 @@ class ClientWindow(QMainWindow):
                 item = QTableWidgetItem(str(value))
                 self.best_table.setItem(row, column, item)
 
-    def seed_range(self) -> None:
+    def seed_range(self, *_: object) -> None:
         import requests
 
         try:
