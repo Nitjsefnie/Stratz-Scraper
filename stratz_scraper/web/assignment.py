@@ -13,6 +13,7 @@ from ..database import (
 )
 
 ASSIGNMENT_CLEANUP_KEY = "last_assignment_cleanup"
+HERO_ASSIGNMENT_CURSOR_KEY = "hero_assignment_cursor"
 ASSIGNMENT_CLEANUP_INTERVAL = timedelta(seconds=60)
 
 _LOGGER = logging.getLogger(__name__)
@@ -141,6 +142,59 @@ def _restart_discovery_cycle(cur) -> bool:
     return True
 
 
+def _assign_next_hero(cur) -> dict | None:
+    last_cursor_row = retryable_execute(
+        cur,
+        "SELECT value FROM meta WHERE key=?",
+        (HERO_ASSIGNMENT_CURSOR_KEY,),
+    ).fetchone()
+    try:
+        last_cursor = int(last_cursor_row["value"]) if last_cursor_row else 0
+    except (TypeError, ValueError):
+        last_cursor = 0
+
+    for offset in (last_cursor, 0):
+        assigned_row = retryable_execute(
+            cur,
+            """
+            WITH candidate AS (
+                SELECT steamAccountId
+                FROM players
+                WHERE hero_done=0
+                  AND assigned_to IS NULL
+                  AND steamAccountId > ?
+                ORDER BY steamAccountId ASC
+                LIMIT 1
+            )
+            UPDATE players
+            SET assigned_to='hero',
+                assigned_at=CURRENT_TIMESTAMP
+            WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
+              AND hero_done=0
+              AND assigned_to IS NULL
+            RETURNING steamAccountId
+            """,
+            (offset,),
+        ).fetchone()
+        if assigned_row:
+            steam_account_id = int(assigned_row["steamAccountId"])
+            retryable_execute(
+                cur,
+                """
+                INSERT INTO meta (key, value)
+                VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                """,
+                (HERO_ASSIGNMENT_CURSOR_KEY, str(steam_account_id)),
+            )
+            return {
+                "type": "fetch_hero_stats",
+                "steamAccountId": steam_account_id,
+            }
+
+    return None
+
+
 def assign_next_task(*, run_cleanup: bool = False) -> dict | None:
     """Select the next task to hand to a worker."""
     task_payload: dict | None = None
@@ -212,31 +266,7 @@ def assign_next_task(*, run_cleanup: bool = False) -> dict | None:
                         }
 
                 if candidate_payload is None:
-                    assigned_row = retryable_execute(
-                        cur,
-                        """
-                        WITH candidate AS (
-                            SELECT steamAccountId
-                            FROM players
-                            WHERE hero_done=0
-                              AND assigned_to IS NULL
-                            ORDER BY seen_count DESC, COALESCE(depth, 0) ASC, steamAccountId ASC
-                            LIMIT 1
-                        )
-                        UPDATE players
-                        SET assigned_to='hero',
-                            assigned_at=CURRENT_TIMESTAMP
-                        WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
-                          AND hero_done=0
-                          AND assigned_to IS NULL
-                        RETURNING steamAccountId
-                        """,
-                    ).fetchone()
-                    if assigned_row:
-                        candidate_payload = {
-                            "type": "fetch_hero_stats",
-                            "steamAccountId": int(assigned_row["steamAccountId"]),
-                        }
+                    candidate_payload = _assign_next_hero(cur)
 
                 if candidate_payload is None:
                     hero_pending = cur.execute(
