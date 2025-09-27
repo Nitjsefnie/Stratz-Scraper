@@ -102,39 +102,21 @@ def _assign_discovery(cur) -> dict | None:
             FROM players
             WHERE hero_done=1
               AND discover_done=0
-              AND assigned_to IS NULL
-            ORDER BY seen_count DESC, COALESCE(depth, 0) ASC, steamAccountId ASC
+              AND (assigned_to IS NULL OR assigned_to='discover')
+            ORDER BY (assigned_to IS NOT NULL),
+                     seen_count DESC,
+                     COALESCE(depth, 0) ASC,
+                     steamAccountId ASC
             LIMIT 1
         )
         UPDATE players
         SET assigned_to='discover',
             assigned_at=CURRENT_TIMESTAMP
         WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
-          AND assigned_to IS NULL
+          AND (assigned_to IS NULL OR assigned_to='discover')
         RETURNING steamAccountId, depth
         """,
     ).fetchone()
-    if not assigned:
-        assigned = retryable_execute(
-            cur,
-            """
-            WITH candidate AS (
-                SELECT steamAccountId, depth
-                FROM players
-                WHERE hero_done=1
-                  AND discover_done=0
-                  AND assigned_to='discover'
-                ORDER BY seen_count DESC, COALESCE(depth, 0) ASC, steamAccountId ASC
-                LIMIT 1
-            )
-            UPDATE players
-            SET assigned_to='discover',
-                assigned_at=CURRENT_TIMESTAMP
-            WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
-              AND assigned_to='discover'
-            RETURNING steamAccountId, depth
-            """,
-        ).fetchone()
     if not assigned:
         return None
     depth_value = assigned["depth"]

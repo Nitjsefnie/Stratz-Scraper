@@ -260,23 +260,20 @@ def ensure_indexes(*, lock_acquired: bool = False) -> None:
                         steamAccountId
                     )
                     WHERE hero_done=1 AND assigned_to IS NULL;
-                CREATE INDEX IF NOT EXISTS idx_players_discover_queue
+                DROP INDEX IF EXISTS idx_players_discover_queue;
+                DROP INDEX IF EXISTS idx_players_discover_queue_seen;
+                CREATE INDEX IF NOT EXISTS idx_players_discover_assignment
                     ON players (
                         hero_done,
                         discover_done,
-                        assigned_to,
-                        COALESCE(depth, 0),
-                        steamAccountId
-                    );
-                CREATE INDEX IF NOT EXISTS idx_players_discover_queue_seen
-                    ON players (
-                        hero_done,
-                        discover_done,
-                        assigned_to,
+                        (assigned_to IS NOT NULL),
                         seen_count DESC,
                         COALESCE(depth, 0),
                         steamAccountId
-                    );
+                    )
+                    WHERE hero_done=1
+                      AND discover_done=0
+                      AND (assigned_to IS NULL OR assigned_to='discover');
                 CREATE INDEX IF NOT EXISTS idx_players_assignment_state
                     ON players (
                         assigned_to,
