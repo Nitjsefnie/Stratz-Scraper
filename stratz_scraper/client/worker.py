@@ -189,11 +189,12 @@ def _submit_discovery(
 
 def _execute_stratz_query(session: requests.Session, token: str, query: str, variables: dict) -> dict:
     headers = {
+        **DEFAULT_STRATZ_HEADERS,
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "Accept": session.headers.get("Accept", "*/*"),
         "apollographql-client-name": "web",
-        "apollographql-client-version": "1.0",
+        "apollographql-client-version": "1.0"
     }
     response = session.post(
         "https://api.stratz.com/graphql",
