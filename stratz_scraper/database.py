@@ -291,6 +291,9 @@ def ensure_indexes(*, lock_acquired: bool = False) -> None:
                 CREATE INDEX IF NOT EXISTS idx_players_hero_cursor
                     ON players (steamAccountId)
                     WHERE hero_done=0 AND assigned_to IS NULL;
+                CREATE INDEX IF NOT EXISTS idx_players_hero_pending
+                    ON players (steamAccountId)
+                    WHERE hero_done=0;
                 CREATE INDEX IF NOT EXISTS idx_players_hero_refresh
                     ON players (
                         hero_done,
