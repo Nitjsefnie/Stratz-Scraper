@@ -1,30 +1,14 @@
 """Background worker processes for the PyQt client."""
 from __future__ import annotations
 
-import json
 import math
 import time
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from multiprocessing import Event, Queue
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import requests
-
-try:
-    from selenium import webdriver
-    from selenium.common.exceptions import WebDriverException
-    from selenium.webdriver.chrome.options import Options as ChromeOptions
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.edge.options import Options as EdgeOptions
-    from selenium.webdriver.firefox.options import Options as FirefoxOptions
-except Exception:  # pragma: no cover - selenium is optional at runtime
-    webdriver = None
-    WebDriverException = Exception
-    ChromeOptions = None
-    EdgeOptions = None
-    FirefoxOptions = None
-    By = None
 
 DAY_IN_MS = 86_400_000
 INITIAL_BACKOFF_MS = 1_000
@@ -32,38 +16,18 @@ MAX_BACKOFF_MS = DAY_IN_MS
 NO_TASK_WAIT_MS = 60_000
 NO_TASK_RETRY_DELAY_MS = 100
 TASK_RESET_TIMEOUT = 10
-HTTPBIN_HEADERS_URL = "https://httpbin.org/headers"
-
 DEFAULT_STRATZ_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/126.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:143.0) Gecko/20100101 Firefox/143.0",
+    "Accept": "*/*",
+    "Accept-Language": "en-GB,en;q=0.5",
     "Accept-Encoding": "gzip, deflate, br, zstd",
-    "Origin": "https://stratz.com",
-    "Referer": "https://stratz.com/",
-    "Sec-Ch-Ua": '"Not/A)Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Referer": "http://scraper.nitjsefni.eu/",
+    "Origin": "http://scraper.nitjsefni.eu",
+    "Connection": "keep-alive",
     "Sec-Fetch-Dest": "empty",
     "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-site",
-}
-
-BROWSER_HEADER_KEYS = {
-    "Accept",
-    "Accept-Encoding",
-    "Accept-Language",
-    "User-Agent",
-    "Sec-Ch-Ua",
-    "Sec-Ch-Ua-Mobile",
-    "Sec-Ch-Ua-Platform",
-    "Sec-Fetch-Dest",
-    "Sec-Fetch-Mode",
-    "Sec-Fetch-Site",
+    "Sec-Fetch-Site": "cross-site",
+    "Priority": "u=4",
 }
 
 
@@ -152,120 +116,6 @@ def _wait(stop_event: Event, duration_ms: int) -> None:
         time.sleep(min(0.5, remaining))
 
 
-def _create_chrome_driver() -> Any:
-    assert ChromeOptions is not None  # nosec - guarded by caller
-    options = ChromeOptions()
-    # Allow Selenium Manager to discover the binary but prefer headless execution.
-    if hasattr(options, "add_argument"):
-        options.add_argument("--headless=new")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--disable-extensions")
-        options.add_argument("--window-size=1280,800")
-    return webdriver.Chrome(options=options)
-
-
-def _create_edge_driver() -> Any:
-    assert EdgeOptions is not None  # nosec - guarded by caller
-    options = EdgeOptions()
-    if hasattr(options, "use_chromium"):
-        options.use_chromium = True
-    if hasattr(options, "add_argument"):
-        options.add_argument("--headless=new")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--disable-extensions")
-        options.add_argument("--window-size=1280,800")
-    return webdriver.Edge(options=options)
-
-
-def _create_firefox_driver() -> Any:
-    assert FirefoxOptions is not None  # nosec - guarded by caller
-    options = FirefoxOptions()
-    if hasattr(options, "add_argument"):
-        options.add_argument("-headless")
-    else:
-        options.headless = True
-    return webdriver.Firefox(options=options)
-
-
-def _available_browser_factories() -> List[Tuple[str, Any]]:
-    factories: List[Tuple[str, Any]] = []
-    if webdriver is None or By is None:
-        return factories
-    if ChromeOptions is not None:
-        factories.append(("Chrome", _create_chrome_driver))
-    if EdgeOptions is not None:
-        factories.append(("Edge", _create_edge_driver))
-    if FirefoxOptions is not None:
-        factories.append(("Firefox", _create_firefox_driver))
-    return factories
-
-
-def _collect_headers_from_driver(driver: Any) -> Optional[Dict[str, str]]:
-    if By is None:
-        return None
-    user_agent: Optional[str]
-    languages: Optional[Any]
-    data: Dict[str, Any]
-    try:
-        driver.get(HTTPBIN_HEADERS_URL)
-        time.sleep(1)
-        body_element = driver.find_element(By.TAG_NAME, "body")
-        text = body_element.text if body_element is not None else ""
-        data = json.loads(text) if text else {}
-    except Exception:
-        data = {}
-    try:
-        user_agent = driver.execute_script("return navigator.userAgent")
-    except Exception:
-        user_agent = None
-    try:
-        languages = driver.execute_script("return navigator.languages || []")
-    except Exception:
-        languages = None
-    headers: Dict[str, str] = {}
-    payload_headers = data.get("headers") if isinstance(data, dict) else None
-    if isinstance(payload_headers, dict):
-        for key, value in payload_headers.items():
-            if key in BROWSER_HEADER_KEYS and isinstance(value, str):
-                headers[key] = value
-    if user_agent and "User-Agent" not in headers:
-        headers["User-Agent"] = str(user_agent)
-    if languages and isinstance(languages, list) and "Accept-Language" not in headers:
-        language_values = [str(lang) for lang in languages if isinstance(lang, str)]
-        if language_values:
-            headers["Accept-Language"] = ",".join(language_values)
-    return headers or None
-
-
-def _probe_browser_headers() -> Tuple[Optional[Dict[str, str]], Optional[str], List[str]]:
-    factories = _available_browser_factories()
-    if not factories:
-        return None, None, ["Selenium webdriver is unavailable"]
-
-    attempts: List[str] = []
-    for name, factory in factories:
-        driver = None
-        try:
-            driver = factory()
-        except WebDriverException as exc:  # pragma: no cover - requires browsers
-            attempts.append(f"{name} launch failed: {exc}")
-            continue
-        except Exception as exc:  # pragma: no cover - unexpected failures
-            attempts.append(f"{name} launch error: {exc}")
-            continue
-        try:
-            headers = _collect_headers_from_driver(driver)
-        finally:
-            try:
-                driver.quit()
-            except Exception:
-                pass
-        if headers:
-            return headers, name, attempts
-        attempts.append(f"{name} did not yield headers")
-    return None, None, attempts
-
-
 def _server_post(session: requests.Session, url: str, path: str, json_payload: dict, timeout: int = 30) -> dict:
     response = session.post(f"{url}{path}", json=json_payload, timeout=timeout)
     response.raise_for_status()
@@ -341,7 +191,7 @@ def _execute_stratz_query(session: requests.Session, token: str, query: str, var
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
-        "Accept": session.headers.get("Accept", "application/json, text/plain, */*"),
+        "Accept": session.headers.get("Accept", "*/*"),
         "apollographql-client-name": "web",
         "apollographql-client-version": "1.0",
     }
@@ -522,36 +372,9 @@ def worker_entry(config: WorkerConfig, stop_event: Event, queue: Queue) -> None:
     token_value = config.token_value.strip()
     session = requests.Session()
     stratz_session = requests.Session()
-    browser_headers, browser_name, header_attempts = _probe_browser_headers()
-    if browser_headers:
-        stratz_session.headers.clear()
-        stratz_session.headers.update(browser_headers)
-        for key, value in DEFAULT_STRATZ_HEADERS.items():
-            stratz_session.headers.setdefault(key, value)
-        _send_log(
-            queue,
-            config.token_id,
-            f"Captured {browser_name} headers via Selenium for Stratz requests.",
-        )
-    else:
-        stratz_session.headers.update(DEFAULT_STRATZ_HEADERS)
-        if header_attempts:
-            truncated = "; ".join(header_attempts[:2])
-            if len(header_attempts) > 2:
-                truncated += "; ..."
-            _send_log(
-                queue,
-                config.token_id,
-                f"Falling back to bundled headers. Selenium errors: {truncated}",
-            )
-        else:
-            _send_log(
-                queue,
-                config.token_id,
-                "Falling back to bundled headers. Selenium not available.",
-            )
-    stratz_session.headers.setdefault("Origin", "https://stratz.com")
-    stratz_session.headers.setdefault("Referer", "https://stratz.com/")
+    stratz_session.headers.clear()
+    stratz_session.headers.update(DEFAULT_STRATZ_HEADERS)
+    _send_log(queue, config.token_id, "Using bundled Stratz headers.")
     requests_remaining = config.max_requests
     completed_tasks = 0
     start_ms = _monotonic_ms()
