@@ -178,7 +178,9 @@ def _execute_stratz_query(session: requests.Session, token: str, query: str, var
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
-        "Accept": "application/json",
+        "Accept": "application/json, text/plain, */*",
+        "apollographql-client-name": "web",
+        "apollographql-client-version": "1.0",
     }
     response = session.post(
         "https://api.stratz.com/graphql",
@@ -362,11 +364,16 @@ def worker_entry(config: WorkerConfig, stop_event: Event, queue: Queue) -> None:
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "StratzScraper/1.0"
+                "Chrome/126.0.0.0 Safari/537.36"
             ),
-            "Accept": "application/json",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br, zstd",
             "Origin": "https://stratz.com",
             "Referer": "https://stratz.com/",
+            "Sec-Ch-Ua": '"Not/A)Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
         }
     )
     requests_remaining = config.max_requests
