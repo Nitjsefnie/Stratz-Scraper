@@ -3,4 +3,7 @@
 !stratz_scraper/
 !stratz_scraper/**
 !**/*.py
+!.github/
+!.github/**
+!requirements-client.txt
 **/__pycache__
