@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 import sqlite3
+import threading
 import time
 
 from .locking import FileLock
@@ -12,6 +13,7 @@ LOCK_PATH = DB_PATH.with_suffix(".lock")
 INITIAL_PLAYER_ID = 293053907
 
 _INDEXES_ENSURED = False
+_THREAD_LOCAL = threading.local()
 
 
 def ensure_schema_exists() -> None:
@@ -37,11 +39,54 @@ def connect() -> sqlite3.Connection:
 @contextmanager
 def db_connection(write: bool = False) -> sqlite3.Connection:
     ensure_schema_exists()
-    conn = connect()
+    conn = None
+    if write:
+        cache = getattr(_THREAD_LOCAL, "connections", None)
+        if cache is None:
+            cache = {}
+            _THREAD_LOCAL.connections = cache
+        conn = cache.get("write")
+        if conn is not None:
+            try:
+                conn.execute("SELECT 1")
+            except sqlite3.Error:
+                try:
+                    conn.close()
+                except sqlite3.Error:
+                    pass
+                conn = None
+                cache.pop("write", None)
+        if conn is None:
+            conn = connect()
+            cache["write"] = conn
+    else:
+        conn = connect()
     try:
         yield conn
     finally:
-        conn.close()
+        if conn is not None:
+            try:
+                if conn.in_transaction:  # type: ignore[attr-defined]
+                    conn.rollback()
+            except sqlite3.Error:
+                pass
+            if not write:
+                conn.close()
+
+
+def close_cached_connections() -> None:
+    cache = getattr(_THREAD_LOCAL, "connections", None)
+    if not cache:
+        return
+    for key in list(cache.keys()):
+        conn = cache.pop(key, None)
+        if conn is None:
+            continue
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+    _THREAD_LOCAL.connections = {}
 
 
 SQL_WRITE_KEYWORDS = {
@@ -332,6 +377,7 @@ def release_incomplete_assignments(max_age_minutes: int = 10, existing: sqlite3.
 __all__ = [
     "connect",
     "db_connection",
+    "close_cached_connections",
     "ensure_schema_exists",
     "ensure_schema",
     "ensure_indexes",

@@ -6,7 +6,12 @@ from typing import Iterable, List
 
 from flask import Flask, Response, abort, jsonify, render_template, request
 
-from ..database import db_connection, retryable_execute, release_incomplete_assignments
+from ..database import (
+    close_cached_connections,
+    db_connection,
+    retryable_execute,
+    release_incomplete_assignments,
+)
 from ..heroes import HEROES
 from .assignment import assign_next_task, ensure_assignment_cleanup_scheduler
 from .config import STATIC_DIR, TEMPLATE_DIR
@@ -117,6 +122,10 @@ def create_app() -> Flask:
 
     release_incomplete_assignments()
     ensure_assignment_cleanup_scheduler()
+
+    @app.teardown_appcontext
+    def _teardown_connections(exception: object | None) -> None:
+        close_cached_connections()
 
     @app.get("/")
     def index() -> str:
