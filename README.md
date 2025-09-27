@@ -64,7 +64,7 @@ A cross-platform PyQt client replaces the previous browser interface. The deskto
 
 ### Running the client
 
-1. Install the client dependencies:
+1. Install the client dependencies (Selenium is included so the worker can mirror your installed browser headers):
 
    ```bash
    python -m pip install -r requirements-client.txt
@@ -77,6 +77,8 @@ A cross-platform PyQt client replaces the previous browser interface. The deskto
    ```
 
 3. Enter your Stratz API tokens, optionally set request limits, and press **Start**. Each token spawns an isolated worker process that communicates with the Flask backend and the Stratz GraphQL API without blocking the interface.
+
+   On startup the worker spins up Selenium WebDriver, probing Chrome, Edge, and Firefox until it finds an installed browser. The headers observed from that browser are then replayed for every Stratz GraphQL call, which keeps the API from rejecting valid tokens with `403 Forbidden` responses. If no compatible browser is found the worker falls back to a bundled Chrome-like profile and logs the failure so you can diagnose the missing driver.
 
 Additional toolbar buttons let you import or export the complete token list to JSON, making it easy to move configurations between machines.
 
