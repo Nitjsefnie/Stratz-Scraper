@@ -280,6 +280,13 @@ def ensure_indexes(*, lock_acquired: bool = False) -> None:
                         COALESCE(depth, 0),
                         steamAccountId
                     );
+                CREATE INDEX IF NOT EXISTS idx_players_hero_assignment_cursor
+                    ON players (
+                        hero_done,
+                        assigned_to,
+                        steamAccountId
+                    )
+                    WHERE hero_done=0 AND assigned_to IS NULL;
                 CREATE INDEX IF NOT EXISTS idx_players_hero_queue_seen
                     ON players (
                         hero_done,
@@ -291,6 +298,9 @@ def ensure_indexes(*, lock_acquired: bool = False) -> None:
                 CREATE INDEX IF NOT EXISTS idx_players_hero_cursor
                     ON players (steamAccountId)
                     WHERE hero_done=0 AND assigned_to IS NULL;
+                CREATE INDEX IF NOT EXISTS idx_players_hero_pending
+                    ON players (steamAccountId)
+                    WHERE hero_done=0;
                 CREATE INDEX IF NOT EXISTS idx_players_hero_refresh
                     ON players (
                         hero_done,
