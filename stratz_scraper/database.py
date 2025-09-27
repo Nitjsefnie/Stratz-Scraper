@@ -250,14 +250,16 @@ def ensure_indexes(*, lock_acquired: bool = False) -> None:
                         COALESCE(hero_refreshed_at, '1970-01-01'),
                         steamAccountId
                     );
-                CREATE INDEX IF NOT EXISTS idx_players_hero_refresh_seen
+                DROP INDEX IF EXISTS idx_players_hero_refresh_seen;
+                CREATE INDEX idx_players_hero_refresh_seen
                     ON players (
                         hero_done,
                         assigned_to,
-                        seen_count DESC,
                         COALESCE(hero_refreshed_at, '1970-01-01'),
+                        seen_count DESC,
                         steamAccountId
-                    );
+                    )
+                    WHERE hero_done=1 AND assigned_to IS NULL;
                 CREATE INDEX IF NOT EXISTS idx_players_discover_queue
                     ON players (
                         hero_done,
