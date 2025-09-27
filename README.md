@@ -58,6 +58,37 @@ python app.py
 
 The app listens on `0.0.0.0:80`. Ensure the process has permission to create `dota.db`; on first boot it will populate the schema and seed the root account automatically. When deploying behind a proxy, forward the original client IP so the `/seed` endpoint remains restricted to local administrators via `is_local_request`.【F:app.py†L1-L7】【F:stratz_scraper/web/app.py†L1-L434】
 
+## Windows Desktop Client
+
+A cross-platform PyQt client replaces the previous browser interface. The desktop application uses multiprocessing to run each Stratz token in its own process, mirroring the concurrency guarantees of the former web workers while keeping the UI responsive.
+
+### Running the client
+
+1. Install the client dependencies:
+
+   ```bash
+   python -m pip install -r requirements-client.txt
+   ```
+
+2. Launch the UI:
+
+   ```bash
+   python -m stratz_scraper.client
+   ```
+
+3. Enter your Stratz API tokens, optionally set request limits, and press **Start**. Each token spawns an isolated worker process that communicates with the Flask backend and the Stratz GraphQL API without blocking the interface.
+
+### Building a Windows executable
+
+The repository ships with a GitHub Actions workflow (`build-client`) that packages the client with PyInstaller on `windows-latest`. To build locally run:
+
+```bash
+python -m pip install pyinstaller
+pyinstaller --noconfirm --windowed --name StratzScraperClient stratz_scraper/client/__main__.py
+```
+
+The workflow output is published as the `StratzScraperClient-windows` artifact on every push and pull request.
+
 ## Database Schema Reference
 
 | Table | Purpose | Key Columns |
