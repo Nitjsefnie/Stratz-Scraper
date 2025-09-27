@@ -279,6 +279,8 @@ def ensure_indexes(*, lock_acquired: bool = False) -> None:
                         assigned_to,
                         assigned_at
                     );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_meta_key
+                    ON meta (key);
                 CREATE INDEX IF NOT EXISTS idx_hero_stats_leaderboard
                     ON hero_stats (
                         heroId,

@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Tuple
 
 from ..database import (
     db_connection,
@@ -154,86 +153,109 @@ def assign_next_task(*, run_cleanup: bool = False) -> dict | None:
         retryable_execute(conn, "BEGIN IMMEDIATE")
         cur = conn.cursor()
 
-        def callback(next_count: int) -> Tuple[dict | None, bool]:
-            refresh_due = next_count % 10 == 0
-            discovery_due = next_count % 200 == 0
-            should_truncate_wal = False
-            candidate_payload = None
+        counter_row = cur.execute(
+            "SELECT value FROM meta WHERE key=?",
+            ("task_assignment_counter",),
+        ).fetchone()
+        try:
+            current_count = int(counter_row["value"]) if counter_row else 0
+        except (TypeError, ValueError):
+            current_count = 0
 
-            if discovery_due:
-                candidate_payload = _assign_discovery(cur)
-                if candidate_payload is None and _restart_discovery_cycle(cur):
-                    should_truncate_wal = True
-                    candidate_payload = _assign_discovery(cur)
-
-            if candidate_payload is None and refresh_due:
-                assigned_row = retryable_execute(
-                    cur,
-                    """
-                    WITH candidate AS (
-                        SELECT steamAccountId
-                        FROM players
-                        WHERE hero_done=1
-                          AND assigned_to IS NULL
-                        ORDER BY COALESCE(hero_refreshed_at, '1970-01-01') ASC,
-                                 seen_count DESC,
-                                 steamAccountId ASC
-                        LIMIT 1
-                    )
-                    UPDATE players
-                    SET hero_done=0,
-                        assigned_to='hero',
-                        assigned_at=CURRENT_TIMESTAMP
-                    WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
-                      AND hero_done=1
-                      AND assigned_to IS NULL
-                    RETURNING steamAccountId
-                    """,
-                ).fetchone()
-                if assigned_row:
-                    candidate_payload = {
-                        "type": "fetch_hero_stats",
-                        "steamAccountId": int(assigned_row["steamAccountId"]),
-                    }
-
-            if candidate_payload is None:
-                assigned_row = retryable_execute(
-                    cur,
-                    """
-                    WITH candidate AS (
-                        SELECT steamAccountId
-                        FROM players
-                        WHERE hero_done=0
-                          AND assigned_to IS NULL
-                        ORDER BY seen_count DESC, COALESCE(depth, 0) ASC, steamAccountId ASC
-                        LIMIT 1
-                    )
-                    UPDATE players
-                    SET assigned_to='hero',
-                        assigned_at=CURRENT_TIMESTAMP
-                    WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
-                      AND hero_done=0
-                      AND assigned_to IS NULL
-                    RETURNING steamAccountId
-                    """,
-                ).fetchone()
-                if assigned_row:
-                    candidate_payload = {
-                        "type": "fetch_hero_stats",
-                        "steamAccountId": int(assigned_row["steamAccountId"]),
-                    }
-
-            if candidate_payload is None:
-                hero_pending = cur.execute(
-                    "SELECT 1 FROM players WHERE hero_done=0 LIMIT 1"
-                ).fetchone()
-                if not hero_pending and not discovery_due:
-                    candidate_payload = _assign_discovery(cur)
-
-            return candidate_payload, should_truncate_wal
+        loop_count = current_count
+        should_checkpoint = False
+        task_payload = None
 
         try:
-            task_payload, should_checkpoint = _with_counter(cur, callback)
+            while True:
+                next_count = loop_count + 1
+                refresh_due = next_count % 10 == 0
+                discovery_due = next_count % 200 == 0
+
+                should_truncate_wal = False
+                candidate_payload = None
+
+                if discovery_due:
+                    candidate_payload = _assign_discovery(cur)
+                    if candidate_payload is None and _restart_discovery_cycle(cur):
+                        should_truncate_wal = True
+                        candidate_payload = _assign_discovery(cur)
+
+                if candidate_payload is None and refresh_due:
+                    assigned_row = retryable_execute(
+                        cur,
+                        """
+                        WITH candidate AS (
+                            SELECT steamAccountId
+                            FROM players
+                            WHERE hero_done=1
+                              AND assigned_to IS NULL
+                            ORDER BY COALESCE(hero_refreshed_at, '1970-01-01') ASC,
+                                     seen_count DESC,
+                                     steamAccountId ASC
+                            LIMIT 1
+                        )
+                        UPDATE players
+                        SET hero_done=0,
+                            assigned_to='hero',
+                            assigned_at=CURRENT_TIMESTAMP
+                        WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
+                          AND hero_done=1
+                          AND assigned_to IS NULL
+                        RETURNING steamAccountId
+                        """,
+                    ).fetchone()
+                    if assigned_row:
+                        candidate_payload = {
+                            "type": "fetch_hero_stats",
+                            "steamAccountId": int(assigned_row["steamAccountId"]),
+                        }
+
+                if candidate_payload is None:
+                    assigned_row = retryable_execute(
+                        cur,
+                        """
+                        WITH candidate AS (
+                            SELECT steamAccountId
+                            FROM players
+                            WHERE hero_done=0
+                              AND assigned_to IS NULL
+                            ORDER BY seen_count DESC, COALESCE(depth, 0) ASC, steamAccountId ASC
+                            LIMIT 1
+                        )
+                        UPDATE players
+                        SET assigned_to='hero',
+                            assigned_at=CURRENT_TIMESTAMP
+                        WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
+                          AND hero_done=0
+                          AND assigned_to IS NULL
+                        RETURNING steamAccountId
+                        """,
+                    ).fetchone()
+                    if assigned_row:
+                        candidate_payload = {
+                            "type": "fetch_hero_stats",
+                            "steamAccountId": int(assigned_row["steamAccountId"]),
+                        }
+
+                if candidate_payload is None:
+                    hero_pending = cur.execute(
+                        "SELECT 1 FROM players WHERE hero_done=0 LIMIT 1"
+                    ).fetchone()
+                    if not hero_pending and not discovery_due:
+                        candidate_payload = _assign_discovery(cur)
+
+                if candidate_payload is not None:
+                    counter_value = _increment_assignment_counter(cur)
+                    if should_truncate_wal or counter_value % 10000 == 0:
+                        should_checkpoint = True
+                    task_payload = candidate_payload
+                    break
+
+                if refresh_due or discovery_due:
+                    break
+
+                loop_count = next_count
         except Exception:
             conn.rollback()
             raise
@@ -250,45 +272,20 @@ def assign_next_task(*, run_cleanup: bool = False) -> dict | None:
     return task_payload
 
 
-def _with_counter(cur, callback: Callable[[int], Tuple[dict | None, bool]]) -> tuple[dict | None, bool]:
-    counter_row = cur.execute(
-        "SELECT value FROM meta WHERE key=?",
+def _increment_assignment_counter(cur) -> int:
+    row = retryable_execute(
+        cur,
+        """
+        INSERT INTO meta (key, value)
+        VALUES (?, '1')
+        ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER) + 1
+        RETURNING CAST(value AS INTEGER) AS value
+        """,
         ("task_assignment_counter",),
     ).fetchone()
+    if not row:
+        return 0
     try:
-        current_count = int(counter_row["value"]) if counter_row else 0
+        return int(row["value"])
     except (TypeError, ValueError):
-        current_count = 0
-
-    loop_count = current_count
-    should_checkpoint = False
-    task_payload: dict | None = None
-
-    while True:
-        next_count = loop_count + 1
-        refresh_due = next_count % 10 == 0
-        discovery_due = next_count % 200 == 0
-        checkpoint_due = next_count % 10000 == 0
-
-        candidate_payload, should_truncate_wal = callback(next_count)
-        if candidate_payload is not None:
-            task_payload = candidate_payload
-            retryable_execute(
-                cur,
-                """
-                INSERT INTO meta (key, value)
-                VALUES (?, ?)
-                ON CONFLICT(key) DO UPDATE SET value=excluded.value
-                """,
-                ("task_assignment_counter", str(next_count)),
-            )
-            if checkpoint_due or should_truncate_wal:
-                should_checkpoint = True
-            break
-
-        if refresh_due or discovery_due:
-            break
-
-        loop_count = next_count
-
-    return task_payload, should_checkpoint
+        return 0
