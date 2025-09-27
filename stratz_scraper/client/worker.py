@@ -178,6 +178,7 @@ def _execute_stratz_query(session: requests.Session, token: str, query: str, var
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
+        "Accept": "application/json",
     }
     response = session.post(
         "https://api.stratz.com/graphql",
@@ -185,6 +186,11 @@ def _execute_stratz_query(session: requests.Session, token: str, query: str, var
         json={"query": query, "variables": variables},
         timeout=60,
     )
+    if response.status_code == 403:
+        raise RuntimeError(
+            "Stratz API returned 403 Forbidden. Double-check that your token is valid and that the "
+            "request is not being blocked by Stratz."
+        )
     if response.status_code == 429:
         retry_after = _parse_retry_after(response.headers.get("retry-after"))
         raise RateLimitError("Stratz API rate limit", retry_after_ms=retry_after)
@@ -351,6 +357,18 @@ def worker_entry(config: WorkerConfig, stop_event: Event, queue: Queue) -> None:
     token_value = config.token_value.strip()
     session = requests.Session()
     stratz_session = requests.Session()
+    stratz_session.headers.update(
+        {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "StratzScraper/1.0"
+            ),
+            "Accept": "application/json",
+            "Origin": "https://stratz.com",
+            "Referer": "https://stratz.com/",
+        }
+    )
     requests_remaining = config.max_requests
     completed_tasks = 0
     start_ms = _monotonic_ms()
