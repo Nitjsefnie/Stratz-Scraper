@@ -35,7 +35,7 @@
               {% set win_rate = (player.matches and (player.wins / player.matches * 100)) or 0 %}
               <tr>
                 <td>{{ loop.index }}</td>
-                <td>{{ player.steamAccountId }}</td>
+                <td><a href="https://stratz.com/players/{{ player.steamAccountId }}" target="_blank" rel="noopener">{{ player.steamAccountId }}</a></td>
                 <td>{{ player.matches }}</td>
                 <td>{{ player.wins }}</td>
                 <td>{{ '%.1f' % win_rate }}%</td>
