@@ -117,6 +117,46 @@ function formatCell(value, fallback = "—") {
   return safe || fallback;
 }
 
+function normalizeSteamAccountId(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value <= 0) {
+      return null;
+    }
+    return Math.trunc(value).toString();
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    if (/^\d+$/.test(trimmed)) {
+      return trimmed;
+    }
+    const parsed = Number(trimmed);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return Math.trunc(parsed).toString();
+    }
+  }
+  return null;
+}
+
+function formatWinRate(wins, matches) {
+  const winsNumber = Number(wins);
+  const matchesNumber = Number(matches);
+  if (!Number.isFinite(winsNumber) || !Number.isFinite(matchesNumber) || matchesNumber <= 0) {
+    return "—";
+  }
+  const clampedWins = Math.max(0, Math.min(winsNumber, matchesNumber));
+  const rate = (clampedWins / matchesNumber) * 100;
+  if (!Number.isFinite(rate)) {
+    return "—";
+  }
+  return `${rate.toFixed(1)}%`;
+}
+
 function appendLogLine(element, line, {
   maxLength = 50_000,
   retainLength = 40_000,
@@ -1111,9 +1151,10 @@ function renderBestTable(rows) {
         <tr>
           <th>Hero</th>
           <th>Hero ID</th>
-          <th>Player ID</th>
+          <th>Steam Account ID</th>
           <th>Matches</th>
           <th>Wins</th>
+          <th>Win Rate</th>
         </tr>
       </thead>
       <tbody>
@@ -1124,13 +1165,20 @@ function renderBestTable(rows) {
       const slug = typeof row?.hero_slug === "string" ? row.hero_slug : "";
       const href = slug ? `/leaderboards/${encodeURIComponent(slug)}` : "";
       const heroCell = href ? `<a href="${href}">${heroName}</a>` : heroName;
+      const normalizedSteamId = normalizeSteamAccountId(row?.player_id);
+      const playerText = formatCell(row?.player_id);
+      const playerCell = normalizedSteamId
+        ? `<a href="https://stratz.com/players/${normalizedSteamId}" target="_blank" rel="noopener">${playerText}</a>`
+        : playerText;
+      const winRateCell = formatCell(formatWinRate(row?.wins, row?.matches));
       return `
         <tr>
           <td>${heroCell}</td>
           <td>${formatCell(row?.hero_id)}</td>
-          <td>${formatCell(row?.player_id)}</td>
+          <td>${playerCell}</td>
           <td>${formatCell(row?.matches)}</td>
           <td>${formatCell(row?.wins)}</td>
+          <td>${winRateCell}</td>
         </tr>
       `;
     })
