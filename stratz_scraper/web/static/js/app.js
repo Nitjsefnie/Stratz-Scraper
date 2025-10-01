@@ -1150,7 +1150,6 @@ function renderBestTable(rows) {
       <thead>
         <tr>
           <th>Hero</th>
-          <th>Hero ID</th>
           <th>Steam Account ID</th>
           <th>Matches</th>
           <th>Wins</th>
@@ -1174,7 +1173,6 @@ function renderBestTable(rows) {
       return `
         <tr>
           <td>${heroCell}</td>
-          <td>${formatCell(row?.hero_id)}</td>
           <td>${playerCell}</td>
           <td>${formatCell(row?.matches)}</td>
           <td>${formatCell(row?.wins)}</td>
