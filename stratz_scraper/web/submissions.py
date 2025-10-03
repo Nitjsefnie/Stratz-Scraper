@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from typing import Iterable, Sequence
+from typing import Iterable, List
 
 from ..database import db_connection, retryable_execute, retryable_executemany
+from ..heroes import HEROES
 
 BACKGROUND_EXECUTOR = ThreadPoolExecutor(max_workers=4)
 
@@ -61,33 +62,133 @@ def _unmark_discover_task(steam_account_id: int) -> None:
         traceback.print_exc()
 
 
+def _extract_hero_rows(
+    steam_account_id: int, heroes_payload: Iterable[dict] | None
+) -> tuple[
+    List[tuple[int, int, int, int]],
+    List[tuple[int, str, int, int, int]],
+]:
+    hero_stats_rows: List[tuple[int, int, int, int]] = []
+    best_rows: List[tuple[int, str, int, int, int]] = []
+    if heroes_payload is None:
+        return hero_stats_rows, best_rows
+    for hero in heroes_payload:
+        try:
+            hero_id = int(hero["heroId"])
+            matches_value = hero.get("matches", hero.get("games"))
+            if matches_value is None:
+                continue
+            matches = int(matches_value)
+            wins = int(hero.get("wins", 0))
+        except (KeyError, TypeError, ValueError):
+            continue
+        hero_stats_rows.append((steam_account_id, hero_id, matches, wins))
+        hero_name = HEROES.get(hero_id)
+        if hero_name:
+            best_rows.append((hero_id, hero_name, steam_account_id, matches, wins))
+    return hero_stats_rows, best_rows
+
+
+def _extract_discovered_counts(values: Iterable[object] | None) -> List[tuple[int, int]]:
+    aggregated: dict[int, int] = {}
+    order: List[int] = []
+    if values is None:
+        return []
+    for value in values:
+        candidate_id = None
+        count_value: int | None = 1
+        if isinstance(value, dict):
+            candidate_id = value.get("steamAccountId")
+            if candidate_id is None:
+                candidate_id = value.get("id")
+            count_raw = value.get("count")
+            if count_raw is None:
+                count_raw = value.get("seenCount")
+            if count_raw is not None:
+                try:
+                    count_value = int(count_raw)
+                except (TypeError, ValueError):
+                    count_value = 0
+        else:
+            candidate_id = value
+        try:
+            candidate_id = int(candidate_id)
+        except (TypeError, ValueError):
+            continue
+        if candidate_id <= 0:
+            continue
+        if count_value is None:
+            count_value = 0
+        if not isinstance(count_value, int):
+            try:
+                count_value = int(count_value)
+            except (TypeError, ValueError):
+                count_value = 0
+        if count_value <= 0:
+            continue
+        if candidate_id not in aggregated:
+            aggregated[candidate_id] = count_value
+            order.append(candidate_id)
+        else:
+            aggregated[candidate_id] += count_value
+    return [(pid, aggregated[pid]) for pid in order]
+
+
+def _resolve_next_depth(
+    provided_next_depth: int | None,
+    provided_depth: int | None,
+    assignment_depth: int | None,
+) -> int:
+    if provided_next_depth is not None:
+        return provided_next_depth
+    parent_depth_value = provided_depth
+    if parent_depth_value is None:
+        if assignment_depth is not None:
+            parent_depth_value = assignment_depth
+        else:
+            parent_depth_value = 0
+    return parent_depth_value + 1
+
+
+def _coerce_optional_int(value: object | None) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
 def process_hero_submission(
     steam_account_id: int,
-    hero_stats_rows: Sequence[tuple[int, int, int, int]],
-    best_rows: Sequence[tuple[int, str, int, int, int]],
+    heroes_payload: Iterable[dict] | None,
 ) -> None:
+    hero_stats_rows, best_rows = _extract_hero_rows(steam_account_id, heroes_payload)
     try:
         with db_connection(write=True) as conn:
             cur = conn.cursor()
-            retryable_executemany(
-                cur,
-                """
-                INSERT INTO hero_stats (steamAccountId, heroId, matches, wins)
-                VALUES (?,?,?,?)
-                ON CONFLICT(steamAccountId, heroId) DO UPDATE SET
-                    matches = CASE
-                        WHEN excluded.matches > hero_stats.matches
-                        THEN excluded.matches
-                        ELSE hero_stats.matches
-                    END,
-                    wins = CASE
-                        WHEN excluded.matches > hero_stats.matches
-                        THEN excluded.wins
-                        ELSE hero_stats.wins
-                    END
-                """,
-                hero_stats_rows or [],
-            )
+            if hero_stats_rows:
+                retryable_executemany(
+                    cur,
+                    """
+                    INSERT INTO hero_stats (steamAccountId, heroId, matches, wins)
+                    VALUES (?,?,?,?)
+                    ON CONFLICT(steamAccountId, heroId) DO UPDATE SET
+                        matches = CASE
+                            WHEN excluded.matches > hero_stats.matches
+                            THEN excluded.matches
+                            ELSE hero_stats.matches
+                        END,
+                        wins = CASE
+                            WHEN excluded.matches > hero_stats.matches
+                            THEN excluded.wins
+                            ELSE hero_stats.wins
+                        END
+                    """,
+                    hero_stats_rows,
+                )
             if best_rows:
                 retryable_executemany(
                     cur,
@@ -107,6 +208,8 @@ def process_hero_submission(
                 """
                 UPDATE players
                 SET hero_done=1,
+                    assigned_to=NULL,
+                    assigned_at=NULL,
                     hero_refreshed_at=CURRENT_TIMESTAMP
                 WHERE steamAccountId=?
                 """,
@@ -125,9 +228,20 @@ def process_hero_submission(
 
 def process_discover_submission(
     steam_account_id: int,
-    discovered_counts: Iterable[tuple[int, int]],
-    next_depth_value: int,
+    discovered_payload: Iterable[object] | None,
+    provided_next_depth: int | None,
+    provided_depth: int | None,
+    assignment_depth: int | None,
 ) -> None:
+    parsed_next_depth = _coerce_optional_int(provided_next_depth)
+    parsed_depth = _coerce_optional_int(provided_depth)
+    parsed_assignment_depth = _coerce_optional_int(assignment_depth)
+    discovered_counts = _extract_discovered_counts(discovered_payload)
+    next_depth_value = _resolve_next_depth(
+        parsed_next_depth,
+        parsed_depth,
+        parsed_assignment_depth,
+    )
     try:
         with db_connection(write=True) as conn:
             cur = conn.cursor()
@@ -190,27 +304,27 @@ def process_discover_submission(
 
 def submit_hero_submission(
     steam_account_id: int,
-    hero_stats_rows: Sequence[tuple[int, int, int, int]],
-    best_rows: Sequence[tuple[int, str, int, int, int]],
+    heroes_payload: Iterable[dict] | None,
 ) -> None:
     BACKGROUND_EXECUTOR.submit(
         process_hero_submission,
         steam_account_id,
-        hero_stats_rows,
-        best_rows,
+        heroes_payload,
     )
 
 
 def submit_discover_submission(
     steam_account_id: int,
-    discovered_counts: Sequence[tuple[int, int]],
-    next_depth_value: int,
+    discovered_payload: Iterable[object] | None,
+    provided_next_depth: int | None,
+    provided_depth: int | None,
+    assignment_depth: int | None,
 ) -> None:
-    if not discovered_counts:
-        return
     BACKGROUND_EXECUTOR.submit(
         process_discover_submission,
         steam_account_id,
-        discovered_counts,
-        next_depth_value,
+        discovered_payload,
+        provided_next_depth,
+        provided_depth,
+        assignment_depth,
     )

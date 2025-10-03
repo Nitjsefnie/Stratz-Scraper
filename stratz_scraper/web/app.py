@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Iterable, List
 
 from flask import Flask, Response, abort, jsonify, render_template, request
 
@@ -12,7 +11,6 @@ from ..database import (
     retryable_execute,
     release_incomplete_assignments,
 )
-from ..heroes import HEROES
 from .assignment import assign_next_task, ensure_assignment_cleanup_scheduler
 from .config import STATIC_DIR, TEMPLATE_DIR
 from .leaderboard import fetch_best_payload, fetch_hero_leaderboard
@@ -23,85 +21,6 @@ from .submissions import submit_discover_submission, submit_hero_submission
 from .tasks import reset_player_task
 
 __all__ = ["create_app"]
-
-
-def _extract_hero_rows(steam_account_id: int, heroes_payload: Iterable[dict]) -> tuple[List[tuple[int, int, int, int]], List[tuple[int, str, int, int, int]]]:
-    hero_stats_rows: List[tuple[int, int, int, int]] = []
-    best_rows: List[tuple[int, str, int, int, int]] = []
-    for hero in heroes_payload:
-        try:
-            hero_id = int(hero["heroId"])
-            matches_value = hero.get("matches", hero.get("games"))
-            if matches_value is None:
-                continue
-            matches = int(matches_value)
-            wins = int(hero.get("wins", 0))
-        except (KeyError, TypeError, ValueError):
-            continue
-        hero_stats_rows.append((steam_account_id, hero_id, matches, wins))
-        hero_name = HEROES.get(hero_id)
-        if hero_name:
-            best_rows.append((hero_id, hero_name, steam_account_id, matches, wins))
-    return hero_stats_rows, best_rows
-
-
-def _extract_discovered_counts(values: Iterable[object]) -> List[tuple[int, int]]:
-    aggregated: dict[int, int] = {}
-    order: List[int] = []
-    for value in values:
-        candidate_id = None
-        count_value = 1
-        if isinstance(value, dict):
-            candidate_id = value.get("steamAccountId")
-            if candidate_id is None:
-                candidate_id = value.get("id")
-            count_raw = value.get("count")
-            if count_raw is None:
-                count_raw = value.get("seenCount")
-            if count_raw is not None:
-                try:
-                    count_value = int(count_raw)
-                except (TypeError, ValueError):
-                    count_value = 0
-        else:
-            candidate_id = value
-        try:
-            candidate_id = int(candidate_id)
-        except (TypeError, ValueError):
-            continue
-        if candidate_id <= 0:
-            continue
-        if count_value is None:
-            count_value = 0
-        if not isinstance(count_value, int):
-            try:
-                count_value = int(count_value)
-            except (TypeError, ValueError):
-                count_value = 0
-        if count_value <= 0:
-            continue
-        if candidate_id not in aggregated:
-            aggregated[candidate_id] = count_value
-            order.append(candidate_id)
-        else:
-            aggregated[candidate_id] += count_value
-    return [(pid, aggregated[pid]) for pid in order]
-
-
-def _resolve_next_depth(
-    provided_next_depth: int | None,
-    provided_depth: int | None,
-    assignment_depth: int | None,
-) -> int:
-    if provided_next_depth is not None:
-        return provided_next_depth
-    parent_depth_value = provided_depth
-    if parent_depth_value is None:
-        if assignment_depth is not None:
-            parent_depth_value = assignment_depth
-        else:
-            parent_depth_value = 0
-    return parent_depth_value + 1
 
 
 def create_app() -> Flask:
@@ -152,32 +71,22 @@ def create_app() -> Flask:
                 steam_account_id = int(data["steamAccountId"])
             except (KeyError, TypeError, ValueError):
                 return jsonify({"status": "error", "message": "steamAccountId is required"}), 400
-            hero_stats_rows, best_rows = _extract_hero_rows(
-                steam_account_id,
-                data.get("heroes", []),
-            )
-            with db_connection(write=True) as conn:
+            heroes_payload = data.get("heroes", [])
+            with db_connection() as conn:
                 cur = conn.cursor()
-                update_cursor = retryable_execute(
+                player_row = retryable_execute(
                     cur,
-                    """
-                    UPDATE players
-                    SET hero_done=1,
-                        assigned_to=NULL,
-                        assigned_at=NULL
-                    WHERE steamAccountId=?
-                    """,
+                    "SELECT 1 FROM players WHERE steamAccountId=?",
                     (steam_account_id,),
-                )
-            if update_cursor.rowcount == 0:
+                ).fetchone()
+            if player_row is None:
                 return (
                     jsonify({"status": "error", "message": "Player not found"}),
                     404,
                 )
             submit_hero_submission(
                 steam_account_id,
-                hero_stats_rows,
-                best_rows,
+                heroes_payload,
             )
             next_task = assign_next_task() if request_new_task else None
             response_payload = {"status": "ok"}
@@ -203,51 +112,28 @@ def create_app() -> Flask:
                     provided_depth = int(depth_raw)
                 except (TypeError, ValueError):
                     provided_depth = None
-            needs_assignment_depth = (
-                provided_next_depth is None and provided_depth is None
-            )
-            discovered_counts = _extract_discovered_counts(data.get("discovered", []))
-            with db_connection(write=True) as conn:
+            discovered_payload = data.get("discovered", [])
+            assignment_depth = None
+            with db_connection() as conn:
                 cur = conn.cursor()
-                update_cursor = retryable_execute(
+                assignment_row = retryable_execute(
                     cur,
-                    """
-                    UPDATE players
-                    SET discover_done=1,
-                        assigned_to=NULL,
-                        assigned_at=NULL
-                    WHERE steamAccountId=?
-                    """,
+                    "SELECT depth FROM players WHERE steamAccountId=?",
                     (steam_account_id,),
-                )
-                assignment_depth = None
-                if needs_assignment_depth:
-                    assignment_row = retryable_execute(
-                        cur,
-                        "SELECT depth FROM players WHERE steamAccountId=?",
-                        (steam_account_id,),
-                    ).fetchone()
-                    if assignment_row is not None and assignment_row["depth"] is not None:
-                        try:
-                            assignment_depth = int(assignment_row["depth"])
-                        except (TypeError, ValueError):
-                            assignment_depth = None
-            if update_cursor.rowcount == 0:
+                ).fetchone()
+            if assignment_row is None:
                 return (
                     jsonify({"status": "error", "message": "Player not found"}),
                     404,
                 )
-            next_depth_value = _resolve_next_depth(
+            assignment_depth = assignment_row["depth"] if assignment_row is not None else None
+            submit_discover_submission(
+                steam_account_id,
+                discovered_payload,
                 provided_next_depth,
                 provided_depth,
                 assignment_depth,
             )
-            if discovered_counts:
-                submit_discover_submission(
-                    steam_account_id,
-                    discovered_counts,
-                    next_depth_value,
-                )
             next_task = assign_next_task() if request_new_task else None
             response_payload = {"status": "ok"}
             if request_new_task:
