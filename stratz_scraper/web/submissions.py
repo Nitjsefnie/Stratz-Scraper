@@ -263,17 +263,6 @@ def process_discover_submission(
             retryable_execute(
                 cur,
                 """
-                UPDATE players
-                SET discover_done=1,
-                    assigned_to=NULL,
-                    assigned_at=NULL
-                WHERE steamAccountId=?
-                """,
-                (steam_account_id,),
-            )
-            retryable_execute(
-                cur,
-                """
                 UPDATE meta
                 SET value = '-1'
                 WHERE key = 'hero_assignment_cursor';
