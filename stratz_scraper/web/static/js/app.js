@@ -15,6 +15,7 @@ const elements = {
   exportTokens: document.getElementById("exportTokens"),
   importTokens: document.getElementById("importTokens"),
   importTokensFile: document.getElementById("importTokensFile"),
+  toggleTokens: document.getElementById("toggleTokens"),
   begin: document.getElementById("begin"),
   stop: document.getElementById("stop"),
   progress: document.getElementById("progress"),
@@ -393,6 +394,31 @@ function updateRequestsRemainingDisplay() {
   elements.requestsRemaining.textContent = total;
 }
 
+function setAllTokensExpanded(expanded) {
+  state.tokens.forEach((token) => {
+    token.expanded = expanded;
+    if (token.dom?.row) {
+      token.dom.row.open = expanded;
+    }
+  });
+  updateCollapseAllButton();
+}
+
+function updateCollapseAllButton() {
+  if (!elements.toggleTokens) {
+    return;
+  }
+  const total = state.tokens.length;
+  elements.toggleTokens.disabled = total === 0;
+  if (total === 0) {
+    elements.toggleTokens.textContent = "Collapse all";
+    return;
+  }
+
+  const allCollapsed = state.tokens.every((token) => token.expanded === false);
+  elements.toggleTokens.textContent = allCollapsed ? "Expand all" : "Collapse all";
+}
+
 function updateButtons() {
   const hasReadyToken = state.tokens.some(
     (token) => token.value.trim().length > 0 && !token.running && !token.stopRequested,
@@ -716,6 +742,7 @@ function updateRunningState() {
   state.tokens.forEach((token) => updateTokenDisplay(token));
   updateGlobalMetrics();
   updateTokenSummary();
+  updateCollapseAllButton();
 }
 
 function removeToken(id) {
@@ -754,6 +781,7 @@ function requestStopForToken(token, { silent = false } = {}) {
   if (token.dom?.row) {
     token.dom.row.open = true;
   }
+  updateCollapseAllButton();
   updateTokenDisplay(token);
   updateButtons();
   if (!silent) {
@@ -809,6 +837,7 @@ function renderTokens() {
     elements.tokenList.appendChild(message);
     updateGlobalMetrics();
     updateTokenSummary();
+    updateCollapseAllButton();
     return;
   }
 
@@ -824,6 +853,7 @@ function renderTokens() {
     row.open = Boolean(token.expanded);
     row.addEventListener("toggle", () => {
       token.expanded = row.open;
+      updateCollapseAllButton();
     });
 
     const summary = document.createElement("summary");
@@ -997,6 +1027,7 @@ function renderTokens() {
   });
   updateGlobalMetrics();
   updateTokenSummary();
+  updateCollapseAllButton();
 }
 
 function recordTaskCompletion(token) {
@@ -1347,10 +1378,12 @@ async function workLoopForToken(token) {
   token.backoff = 1000;
   token.requestsRemaining = parseMaxRequests(token.maxRequests);
   token.lastStartMs = getNowMs();
-  token.expanded = true;
+  const shouldExpand = token.expanded !== false;
+  token.expanded = shouldExpand;
   if (token.dom?.row) {
-    token.dom.row.open = true;
+    token.dom.row.open = shouldExpand;
   }
+  updateCollapseAllButton();
   updateTokenDisplay(token);
   updateRunningState();
   logToken(token, "Worker started.");
@@ -1622,6 +1655,16 @@ if (elements.importTokensFile) {
     const files = target?.files;
     const file = files && files.length > 0 ? files[0] : null;
     handleImportFile(file);
+  });
+}
+
+if (elements.toggleTokens) {
+  elements.toggleTokens.addEventListener("click", () => {
+    if (!state.tokens.length) {
+      return;
+    }
+    const shouldExpand = state.tokens.some((token) => token.expanded === false);
+    setAllTokensExpanded(shouldExpand);
   });
 }
 
