@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
 from typing import Iterable, Sequence
 
 from ..database import db_connection, retryable_execute, retryable_executemany
@@ -14,60 +13,9 @@ __all__ = [
     "BACKGROUND_EXECUTOR",
     "process_discover_submission",
     "process_hero_submission",
-    "record_task_duration",
     "submit_discover_submission",
     "submit_hero_submission",
 ]
-
-
-def _parse_sqlite_timestamp(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value)
-    except (TypeError, ValueError):
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
-
-
-def record_task_duration(cur, steam_account_id: int, task_type: str, assigned_at_value: str | None) -> float | None:
-    submitted_at = datetime.now(timezone.utc)
-    assigned_at = _parse_sqlite_timestamp(assigned_at_value)
-    duration_seconds = None
-    if assigned_at is not None:
-        duration_seconds = (submitted_at - assigned_at).total_seconds()
-    retryable_execute(
-        cur,
-        """
-        INSERT INTO task_durations (
-            steamAccountId,
-            task_type,
-            assigned_at,
-            submitted_at,
-            duration_seconds
-        ) VALUES (?, ?, ?, ?, ?)
-        """,
-        (
-            steam_account_id,
-            task_type,
-            assigned_at.isoformat() if assigned_at is not None else assigned_at_value,
-            submitted_at.isoformat(),
-            duration_seconds,
-        ),
-    )
-    if duration_seconds is not None:
-        print(
-            f"[task-duration] {task_type} for {steam_account_id} took {duration_seconds:.2f}s",
-            flush=True,
-        )
-    else:
-        print(
-            f"[task-duration] {task_type} for {steam_account_id} has no assignment timestamp",
-            flush=True,
-        )
-    return duration_seconds
 
 
 def _unmark_hero_task(steam_account_id: int) -> None:
@@ -165,12 +113,6 @@ def process_hero_submission(
                 """,
                 (steam_account_id,),
             )
-            record_task_duration(
-                cur,
-                steam_account_id,
-                "fetch_hero_stats",
-                assigned_at_value,
-            )
     except Exception:
         import traceback
 
@@ -228,12 +170,6 @@ def process_discover_submission(
                 WHERE steamAccountId=?
                 """,
                 (steam_account_id,),
-            )
-            record_task_duration(
-                cur,
-                steam_account_id,
-                "discover_matches",
-                assigned_at_value,
             )
     except Exception:
         import traceback
