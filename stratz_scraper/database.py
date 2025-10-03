@@ -309,11 +309,13 @@ def ensure_indexes(*, lock_acquired: bool = False) -> None:
                     WHERE hero_done=1
                       AND discover_done=0
                       AND (assigned_to IS NULL OR assigned_to='discover');
+                DROP INDEX IF EXISTS idx_players_assignment_state;
                 CREATE INDEX IF NOT EXISTS idx_players_assignment_state
                     ON players (
                         assigned_to,
                         assigned_at
-                    );
+                    )
+                    WHERE assigned_to IS NOT NULL;
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_meta_key
                     ON meta (key);
                 CREATE INDEX IF NOT EXISTS idx_hero_stats_leaderboard

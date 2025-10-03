@@ -165,16 +165,8 @@ def create_app() -> Flask:
                 steam_account_id,
                 data.get("heroes", []),
             )
-            assigned_at_value = None
             with db_connection(write=True) as conn:
                 cur = conn.cursor()
-                assignment_row = retryable_execute(
-                    cur,
-                    "SELECT assigned_at FROM players WHERE steamAccountId=?",
-                    (steam_account_id,),
-                ).fetchone()
-                if assignment_row is not None:
-                    assigned_at_value = assignment_row["assigned_at"]
                 update_cursor = retryable_execute(
                     cur,
                     """
@@ -195,7 +187,6 @@ def create_app() -> Flask:
                 steam_account_id,
                 hero_stats_rows,
                 best_rows,
-                assigned_at_value,
             )
             next_task = assign_next_task() if request_new_task else None
             response_payload = {"status": "ok"}
@@ -208,16 +199,13 @@ def create_app() -> Flask:
             except (KeyError, TypeError, ValueError):
                 return jsonify({"status": "error", "message": "steamAccountId is required"}), 400
             discovered_counts = _extract_discovered_counts(data.get("discovered", []))
-            assigned_at_value = None
             with db_connection(write=True) as conn:
                 cur = conn.cursor()
                 assignment_row = retryable_execute(
                     cur,
-                    "SELECT assigned_at, depth FROM players WHERE steamAccountId=?",
+                    "SELECT depth FROM players WHERE steamAccountId=?",
                     (steam_account_id,),
                 ).fetchone()
-                if assignment_row is not None:
-                    assigned_at_value = assignment_row["assigned_at"]
                 next_depth_value = _resolve_next_depth(data, assignment_row)
                 update_cursor = retryable_execute(
                     cur,
@@ -239,7 +227,6 @@ def create_app() -> Flask:
                 steam_account_id,
                 discovered_counts,
                 next_depth_value,
-                assigned_at_value,
             )
             next_task = assign_next_task() if request_new_task else None
             response_payload = {"status": "ok"}
