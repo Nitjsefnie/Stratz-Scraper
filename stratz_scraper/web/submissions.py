@@ -171,6 +171,14 @@ def process_discover_submission(
                 """,
                 (steam_account_id,),
             )
+            retryable_execute(
+                cur,
+                """
+                UPDATE meta
+                SET value = '-1'
+                WHERE key = 'hero_assignment_cursor';
+                """
+            )
     except Exception:
         import traceback
 

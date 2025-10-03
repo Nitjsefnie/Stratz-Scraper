@@ -30,27 +30,14 @@ def _reset_hero_task(cur, steam_account_id: int) -> int:
     )
     updated_rows = update_cursor.rowcount if update_cursor.rowcount is not None else 0
     if updated_rows:
-        cursor_row = cur.execute(
-            "SELECT value FROM meta WHERE key=?",
-            (HERO_ASSIGNMENT_CURSOR_KEY,),
-        ).fetchone()
-        try:
-            existing_value = int(cursor_row["value"]) if cursor_row else None
-        except (TypeError, ValueError):
-            existing_value = None
-        new_cursor_value = (
-            steam_account_id
-            if existing_value is None
-            else min(steam_account_id, existing_value)
-        )
         retryable_execute(
             cur,
             """
             INSERT INTO meta (key, value)
-            VALUES (?, ?)
-            ON CONFLICT(key) DO UPDATE SET value=excluded.value
+            VALUES (?, '-1')
+            ON CONFLICT(key) DO UPDATE SET value='-1'
             """,
-            (HERO_ASSIGNMENT_CURSOR_KEY, str(new_cursor_value)),
+            (HERO_ASSIGNMENT_CURSOR_KEY, ),
         )
     return updated_rows
 

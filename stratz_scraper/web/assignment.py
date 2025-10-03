@@ -224,7 +224,7 @@ def assign_next_task(*, run_cleanup: bool = False) -> dict | None:
             while True:
                 next_count = loop_count + 1
                 refresh_due = next_count % 10 == 0
-                discovery_due = next_count % 200 == 0
+                discovery_due = next_count % 10000 == 0
 
                 should_truncate_wal = False
                 candidate_payload = None

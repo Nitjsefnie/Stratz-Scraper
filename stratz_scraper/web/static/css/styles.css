@@ -31,7 +31,7 @@ body {
 }
 
 .container {
-  width: min(1200px, 100%);
+  width: min(1500px, 100%);
   display: flex;
   flex-direction: column;
   gap: 24px;
