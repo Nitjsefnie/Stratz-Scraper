@@ -325,7 +325,7 @@ def ensure_indexes(*, lock_acquired: bool = False) -> None:
                         wins DESC,
                         steamAccountId
                     );
-                CREATE INDEX idx_hero_stats_order
+                CREATE INDEX IF NOT EXISTS idx_hero_stats_order
                     ON hero_stats (
                         matches DESC,
                         wins DESC,
