@@ -19,6 +19,7 @@ const elements = {
   stop: document.getElementById("stop"),
   progress: document.getElementById("progress"),
   best: document.getElementById("best"),
+  tokenSummary: document.getElementById("tokenSummary"),
   seedBtn: document.getElementById("seedBtn"),
   seedStart: document.getElementById("seedStart"),
   seedEnd: document.getElementById("seedEnd"),
@@ -26,7 +27,6 @@ const elements = {
   bestTable: document.getElementById("bestTable"),
   progressText: document.getElementById("progressText"),
   backoffText: document.getElementById("backoffText"),
-  statusChip: document.getElementById("runStatus"),
   requestsRemaining: document.getElementById("requestsRemaining"),
   avgTaskTimeGlobal: document.getElementById("avgTaskTimeGlobal"),
   tasksPerDayGlobal: document.getElementById("tasksPerDayGlobal"),
@@ -246,6 +246,81 @@ function formatTasksPerDay(tasksPerDay) {
   return `~${tasksPerDay.toFixed(2)}`;
 }
 
+function formatTokenLabel(token) {
+  if (!token) {
+    return "Token";
+  }
+  const index = Number.isFinite(token.displayIndex) && token.displayIndex > 0
+    ? token.displayIndex
+    : state.tokens.indexOf(token) + 1;
+  const prefix = index > 0 ? `Token ${index}` : "Token";
+  const rawValue = typeof token.value === "string" ? token.value.trim() : "";
+  if (!rawValue) {
+    return prefix;
+  }
+  const compact = rawValue.replace(/\s+/g, "");
+  if (compact.length <= 8) {
+    return `${prefix} • ${compact}`;
+  }
+  const head = compact.slice(0, 4);
+  const tail = compact.slice(-4);
+  return `${prefix} • ${head}…${tail}`;
+}
+
+function formatTokenSummaryMeta(token) {
+  if (!token) {
+    return "";
+  }
+  const parts = [];
+  if (typeof token.requestsRemaining === "number" && Number.isFinite(token.requestsRemaining)) {
+    const remaining = Math.max(0, token.requestsRemaining);
+    const label = remaining === 1 ? "request" : "requests";
+    parts.push(`${remaining.toLocaleString()} ${label} left`);
+  } else {
+    parts.push("∞ requests left");
+  }
+
+  const completed = Number.isFinite(token.completedTasks) ? token.completedTasks : 0;
+  parts.push(`${completed.toLocaleString()} done`);
+
+  const averageText = formatAverageTaskTime(getTokenAverageTaskMs(token));
+  if (averageText !== "—") {
+    parts.push(`${averageText}/task`);
+  }
+
+  return parts.join(" • ");
+}
+
+function updateTokenSummary() {
+  if (!elements.tokenSummary) {
+    return;
+  }
+  const total = state.tokens.length;
+  if (total === 0) {
+    elements.tokenSummary.textContent = "No tokens configured.";
+    return;
+  }
+
+  const running = state.tokens.filter((token) => token.running && !token.stopRequested).length;
+  const stopping = state.tokens.filter((token) => token.running && token.stopRequested).length;
+  const idle = total - running - stopping;
+  const pieces = [];
+  pieces.push(`${total} ${total === 1 ? "token" : "tokens"}`);
+  if (running) {
+    pieces.push(`${running} running`);
+  }
+  if (stopping) {
+    pieces.push(`${stopping} stopping`);
+  }
+  if (idle) {
+    pieces.push(`${idle} idle`);
+  }
+  if (pieces.length === 1) {
+    pieces.push("All idle");
+  }
+  elements.tokenSummary.textContent = pieces.join(" · ");
+}
+
 function updateGlobalMetrics() {
   if (!elements.avgTaskTimeGlobal && !elements.tasksPerDayGlobal) {
     return;
@@ -316,23 +391,6 @@ function updateRequestsRemainingDisplay() {
     0,
   );
   elements.requestsRemaining.textContent = total;
-}
-
-function refreshStatusChip() {
-  if (state.running) {
-    elements.statusChip.textContent = "Running";
-    elements.statusChip.classList.add("running");
-    elements.statusChip.classList.remove("error");
-  } else {
-    elements.statusChip.textContent = "Idle";
-    elements.statusChip.classList.remove("running", "error");
-  }
-}
-
-function showErrorStatus(message) {
-  elements.statusChip.textContent = message;
-  elements.statusChip.classList.add("error");
-  elements.statusChip.classList.remove("running");
 }
 
 function updateButtons() {
@@ -506,7 +564,10 @@ function replaceTokens(newTokens) {
   state.tokens.splice(0, state.tokens.length);
   state.tokenCounter = 0;
   newTokens.forEach((entry) => {
-    addTokenRow({ value: entry.value, maxRequests: entry.maxRequests }, { skipPersist: true });
+    addTokenRow(
+      { value: entry.value, maxRequests: entry.maxRequests },
+      { skipPersist: true, fromStorage: true },
+    );
   });
   if (!newTokens.length) {
     renderTokens();
@@ -590,6 +651,9 @@ function updateTokenDisplay(token) {
     statusValue,
     backoffValue,
     requestsValue,
+    summaryTitle,
+    summaryStatus,
+    summaryMeta,
   } = token.dom;
 
   tokenInput.value = token.value;
@@ -597,6 +661,10 @@ function updateTokenDisplay(token) {
 
   maxInput.value = token.maxRequests;
   maxInput.disabled = token.running || token.stopRequested;
+
+  if (summaryTitle) {
+    summaryTitle.textContent = formatTokenLabel(token);
+  }
 
   const trimmed = token.value.trim();
   startBtn.disabled = token.running || token.stopRequested || trimmed.length === 0;
@@ -610,6 +678,9 @@ function updateTokenDisplay(token) {
     status = "Stopping…";
   }
   statusValue.textContent = status;
+  if (summaryStatus) {
+    summaryStatus.textContent = status;
+  }
 
   const showBackoff = token.running || token.stopRequested;
   backoffValue.textContent = showBackoff ? formatDuration(token.backoff) : "—";
@@ -618,6 +689,9 @@ function updateTokenDisplay(token) {
     requestsValue.textContent = "∞";
   } else {
     requestsValue.textContent = token.requestsRemaining;
+  }
+  if (summaryMeta) {
+    summaryMeta.textContent = formatTokenSummaryMeta(token);
   }
 
   const averageMs = getTokenAverageTaskMs(token);
@@ -636,12 +710,12 @@ function updateTokenDisplay(token) {
 
 function updateRunningState() {
   state.running = state.tokens.some((token) => token.running);
-  refreshStatusChip();
   updateButtons();
   updateBackoffDisplay();
   updateRequestsRemainingDisplay();
   state.tokens.forEach((token) => updateTokenDisplay(token));
   updateGlobalMetrics();
+  updateTokenSummary();
 }
 
 function removeToken(id) {
@@ -676,12 +750,17 @@ function requestStopForToken(token, { silent = false } = {}) {
     return;
   }
   token.stopRequested = true;
+  token.expanded = true;
+  if (token.dom?.row) {
+    token.dom.row.open = true;
+  }
   updateTokenDisplay(token);
   updateButtons();
   if (!silent) {
     logToken(token, "Stop requested.");
   }
   updateGlobalMetrics();
+  updateTokenSummary();
 }
 
 function addTokenRow(initial = {}, options = {}) {
@@ -704,8 +783,13 @@ function addTokenRow(initial = {}, options = {}) {
     totalRuntimeMs: 0,
     lastStartMs: null,
     completedTasks: 0,
+    expanded: Boolean(initial.expanded),
+    displayIndex: state.tokens.length + 1,
   };
   state.tokens.push(token);
+  if (!options.fromStorage) {
+    token.expanded = true;
+  }
   renderTokens();
   if (!options.skipPersist) {
     persistTokens();
@@ -724,13 +808,50 @@ function renderTokens() {
     message.textContent = "No tokens configured.";
     elements.tokenList.appendChild(message);
     updateGlobalMetrics();
+    updateTokenSummary();
     return;
   }
 
-  state.tokens.forEach((token) => {
-    const row = document.createElement("div");
+  state.tokens.forEach((token, index) => {
+    token.displayIndex = index + 1;
+    const row = document.createElement("details");
     row.className = "token-row";
     row.dataset.tokenId = token.id;
+
+    if (typeof token.expanded !== "boolean") {
+      token.expanded = token.running;
+    }
+    row.open = Boolean(token.expanded);
+    row.addEventListener("toggle", () => {
+      token.expanded = row.open;
+    });
+
+    const summary = document.createElement("summary");
+    summary.className = "token-summary";
+
+    const caret = document.createElement("span");
+    caret.className = "token-summary-caret";
+
+    const summaryContent = document.createElement("div");
+    summaryContent.className = "token-summary-content";
+
+    const summaryTitle = document.createElement("span");
+    summaryTitle.className = "token-summary-title";
+    summaryTitle.textContent = formatTokenLabel(token);
+
+    const summaryStatus = document.createElement("span");
+    summaryStatus.className = "token-summary-status";
+    summaryStatus.textContent = "Idle";
+
+    const summaryMeta = document.createElement("span");
+    summaryMeta.className = "token-summary-meta";
+    summaryMeta.textContent = formatTokenSummaryMeta(token);
+
+    summaryContent.append(summaryTitle, summaryStatus, summaryMeta);
+    summary.append(caret, summaryContent);
+
+    const body = document.createElement("div");
+    body.className = "token-body";
 
     const topRow = document.createElement("div");
     topRow.className = "token-top";
@@ -850,11 +971,15 @@ function renderTokens() {
 
     logContainer.append(logLabel, logView);
 
-    row.append(topRow, meta, logContainer);
+    body.append(topRow, meta, logContainer);
+    row.append(summary, body);
     elements.tokenList.appendChild(row);
 
     token.dom = {
       row,
+      summaryTitle,
+      summaryStatus,
+      summaryMeta,
       tokenInput,
       maxInput,
       startBtn,
@@ -871,6 +996,7 @@ function renderTokens() {
     updateTokenDisplay(token);
   });
   updateGlobalMetrics();
+  updateTokenSummary();
 }
 
 function recordTaskCompletion(token) {
@@ -1221,6 +1347,10 @@ async function workLoopForToken(token) {
   token.backoff = 1000;
   token.requestsRemaining = parseMaxRequests(token.maxRequests);
   token.lastStartMs = getNowMs();
+  token.expanded = true;
+  if (token.dom?.row) {
+    token.dom.row.open = true;
+  }
   updateTokenDisplay(token);
   updateRunningState();
   logToken(token, "Worker started.");
@@ -1315,7 +1445,6 @@ async function workLoopForToken(token) {
       const message = error instanceof Error ? error.message : String(error);
       const activeId = task?.steamAccountId;
       logToken(token, `Error${activeId ? ` for ${activeId}` : ""}: ${message}`);
-      showErrorStatus("Retrying");
       const hadTask = Boolean(task);
       if (task) {
         try {
@@ -1360,9 +1489,6 @@ async function workLoopForToken(token) {
           updateTokenDisplay(token);
         }
       }
-      if (!token.stopRequested) {
-        refreshStatusChip();
-      }
     }
   }
 
@@ -1402,7 +1528,7 @@ function loadTokensFromStorage() {
                   ? ""
                   : entry.maxRequests,
             },
-            { skipPersist: true },
+            { skipPersist: true, fromStorage: true },
           );
         });
       }
@@ -1424,7 +1550,7 @@ function loadTokensFromStorage() {
                     ? ""
                     : entry.maxRequests,
               },
-              { skipPersist: true },
+              { skipPersist: true, fromStorage: true },
             );
           });
           persistTokens();
@@ -1437,7 +1563,7 @@ function loadTokensFromStorage() {
     } else {
       const legacy = getCookie("stratz_token");
       if (legacy) {
-        addTokenRow({ value: legacy }, { skipPersist: true });
+        addTokenRow({ value: legacy }, { skipPersist: true, fromStorage: true });
         persistTokens();
         clearCookie("stratz_token");
         log("Migrated saved token to local storage.");
@@ -1456,7 +1582,7 @@ function initialise() {
   updateBackoffDisplay();
   updateRequestsRemainingDisplay();
   updateGlobalMetrics();
-  refreshStatusChip();
+  updateTokenSummary();
   refreshProgress().catch((error) => log(error.message));
   loadBest().catch((error) => log(error.message));
 }
