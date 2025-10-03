@@ -223,11 +223,12 @@ def create_app() -> Flask:
                     jsonify({"status": "error", "message": "Player not found"}),
                     404,
                 )
-            submit_discover_submission(
-                steam_account_id,
-                discovered_counts,
-                next_depth_value,
-            )
+            if discovered_counts:
+                submit_discover_submission(
+                    steam_account_id,
+                    discovered_counts,
+                    next_depth_value,
+                )
             next_task = assign_next_task() if request_new_task else None
             response_payload = {"status": "ok"}
             if request_new_task:

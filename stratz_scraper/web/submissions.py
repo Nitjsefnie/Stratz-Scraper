@@ -203,12 +203,14 @@ def submit_hero_submission(
 
 def submit_discover_submission(
     steam_account_id: int,
-    discovered_counts: Iterable[tuple[int, int]],
+    discovered_counts: Sequence[tuple[int, int]],
     next_depth_value: int,
 ) -> None:
+    if not discovered_counts:
+        return
     BACKGROUND_EXECUTOR.submit(
         process_discover_submission,
         steam_account_id,
-        tuple(discovered_counts),
+        discovered_counts,
         next_depth_value,
     )
