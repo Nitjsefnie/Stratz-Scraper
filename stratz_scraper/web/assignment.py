@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from ..database import (
@@ -21,6 +22,10 @@ _LOGGER = logging.getLogger(__name__)
 _cleanup_thread: threading.Thread | None = None
 _cleanup_stop_event: threading.Event | None = None
 _cleanup_lock = threading.Lock()
+
+_checkpoint_executor = ThreadPoolExecutor(max_workers=1)
+_checkpoint_state_lock = threading.Lock()
+_checkpoint_pending = False
 
 
 __all__ = [
@@ -60,6 +65,30 @@ def ensure_assignment_cleanup_scheduler() -> None:
         thread.start()
         _cleanup_thread = thread
         _cleanup_stop_event = stop_event
+
+
+def _run_wal_checkpoint() -> None:
+    global _checkpoint_pending
+    try:
+        with db_connection(write=True) as checkpoint_conn:
+            retryable_execute(
+                checkpoint_conn,
+                "PRAGMA wal_checkpoint(TRUNCATE);",
+            )
+    except Exception:  # pragma: no cover - best effort logging
+        _LOGGER.exception("Background WAL checkpoint failed")
+    finally:
+        with _checkpoint_state_lock:
+            _checkpoint_pending = False
+
+
+def _schedule_checkpoint() -> None:
+    global _checkpoint_pending
+    with _checkpoint_state_lock:
+        if _checkpoint_pending:
+            return
+        _checkpoint_pending = True
+    _checkpoint_executor.submit(_run_wal_checkpoint)
 
 
 def maybe_run_assignment_cleanup(conn) -> bool:
@@ -293,11 +322,7 @@ def assign_next_task(*, run_cleanup: bool = False) -> dict | None:
             conn.commit()
 
     if should_checkpoint:
-        with db_connection(write=True) as checkpoint_conn:
-            retryable_execute(
-                checkpoint_conn,
-                "PRAGMA wal_checkpoint(TRUNCATE);",
-            )
+        _schedule_checkpoint()
 
     return task_payload
 
