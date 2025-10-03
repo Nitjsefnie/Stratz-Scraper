@@ -203,18 +203,6 @@ def process_hero_submission(
                     """,
                     best_rows,
                 )
-            retryable_execute(
-                cur,
-                """
-                UPDATE players
-                SET hero_done=1,
-                    assigned_to=NULL,
-                    assigned_at=NULL,
-                    hero_refreshed_at=CURRENT_TIMESTAMP
-                WHERE steamAccountId=?
-                """,
-                (steam_account_id,),
-            )
     except Exception:
         import traceback
 

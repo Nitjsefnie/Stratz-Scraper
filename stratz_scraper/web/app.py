@@ -72,18 +72,25 @@ def create_app() -> Flask:
             except (KeyError, TypeError, ValueError):
                 return jsonify({"status": "error", "message": "steamAccountId is required"}), 400
             heroes_payload = data.get("heroes", [])
-            with db_connection() as conn:
+            with db_connection(write=True) as conn:
                 cur = conn.cursor()
-                player_row = retryable_execute(
+                retryable_execute(
                     cur,
-                    "SELECT 1 FROM players WHERE steamAccountId=?",
+                    """
+                    UPDATE players
+                    SET hero_done=1,
+                        assigned_to=NULL,
+                        assigned_at=NULL,
+                        hero_refreshed_at=CURRENT_TIMESTAMP
+                    WHERE steamAccountId=?
+                    """,
                     (steam_account_id,),
-                ).fetchone()
-            if player_row is None:
-                return (
-                    jsonify({"status": "error", "message": "Player not found"}),
-                    404,
                 )
+                if cur.rowcount == 0:
+                    return (
+                        jsonify({"status": "error", "message": "Player not found"}),
+                        404,
+                    )
             submit_hero_submission(
                 steam_account_id,
                 heroes_payload,
