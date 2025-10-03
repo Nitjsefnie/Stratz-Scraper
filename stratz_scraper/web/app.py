@@ -203,26 +203,22 @@ def create_app() -> Flask:
                 cur = conn.cursor()
                 assignment_row = retryable_execute(
                     cur,
-                    "SELECT depth FROM players WHERE steamAccountId=?",
-                    (steam_account_id,),
-                ).fetchone()
-                next_depth_value = _resolve_next_depth(data, assignment_row)
-                update_cursor = retryable_execute(
-                    cur,
                     """
                     UPDATE players
                     SET discover_done=1,
                         assigned_to=NULL,
                         assigned_at=NULL
                     WHERE steamAccountId=?
+                    RETURNING depth
                     """,
                     (steam_account_id,),
-                )
-            if update_cursor.rowcount == 0:
+                ).fetchone()
+            if assignment_row is None:
                 return (
                     jsonify({"status": "error", "message": "Player not found"}),
                     404,
                 )
+            next_depth_value = _resolve_next_depth(data, assignment_row)
             if discovered_counts:
                 submit_discover_submission(
                     steam_account_id,
