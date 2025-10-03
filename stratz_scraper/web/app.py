@@ -88,20 +88,28 @@ def _extract_discovered_counts(values: Iterable[object]) -> List[tuple[int, int]
     return [(pid, aggregated[pid]) for pid in order]
 
 
-def _resolve_next_depth(data: dict, assignment_row) -> int:
-    provided_next_depth = data.get("nextDepth")
+def _resolve_next_depth(
+    data: dict,
+    assignment_row,
+    provided_next_depth: int | None = None,
+    provided_parent_depth: int | None = None,
+) -> int:
     if provided_next_depth is not None:
+        return provided_next_depth
+    provided_next_depth_value = data.get("nextDepth")
+    if provided_next_depth_value is not None:
         try:
-            return int(provided_next_depth)
+            return int(provided_next_depth_value)
         except (TypeError, ValueError):
             pass
-    provided_depth = data.get("depth")
-    parent_depth_value = None
-    if provided_depth is not None:
-        try:
-            parent_depth_value = int(provided_depth)
-        except (TypeError, ValueError):
-            parent_depth_value = None
+    parent_depth_value = provided_parent_depth
+    if parent_depth_value is None:
+        provided_depth = data.get("depth")
+        if provided_depth is not None:
+            try:
+                parent_depth_value = int(provided_depth)
+            except (TypeError, ValueError):
+                parent_depth_value = None
     if parent_depth_value is None:
         if assignment_row and assignment_row["depth"] is not None:
             try:
@@ -199,14 +207,36 @@ def create_app() -> Flask:
             except (KeyError, TypeError, ValueError):
                 return jsonify({"status": "error", "message": "steamAccountId is required"}), 400
             discovered_counts = _extract_discovered_counts(data.get("discovered", []))
+            parsed_next_depth: int | None = None
+            parsed_parent_depth: int | None = None
+            provided_next_depth = data.get("nextDepth")
+            if provided_next_depth is not None:
+                try:
+                    parsed_next_depth = int(provided_next_depth)
+                except (TypeError, ValueError):
+                    parsed_next_depth = None
+            if parsed_next_depth is None:
+                provided_depth = data.get("depth")
+                if provided_depth is not None:
+                    try:
+                        parsed_parent_depth = int(provided_depth)
+                    except (TypeError, ValueError):
+                        parsed_parent_depth = None
             with db_connection(write=True) as conn:
                 cur = conn.cursor()
-                assignment_row = retryable_execute(
-                    cur,
-                    "SELECT depth FROM players WHERE steamAccountId=?",
-                    (steam_account_id,),
-                ).fetchone()
-                next_depth_value = _resolve_next_depth(data, assignment_row)
+                assignment_row = None
+                if parsed_next_depth is None and parsed_parent_depth is None:
+                    assignment_row = retryable_execute(
+                        cur,
+                        "SELECT depth FROM players WHERE steamAccountId=?",
+                        (steam_account_id,),
+                    ).fetchone()
+                next_depth_value = _resolve_next_depth(
+                    data,
+                    assignment_row,
+                    provided_next_depth=parsed_next_depth,
+                    provided_parent_depth=parsed_parent_depth,
+                )
                 update_cursor = retryable_execute(
                     cur,
                     """
