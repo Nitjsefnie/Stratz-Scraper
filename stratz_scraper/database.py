@@ -125,6 +125,7 @@ def retryable_execute(
     parameters=(),
     *,
     use_file_lock: bool | None = None,
+    retry_interval: float = 0.5,
 ):
     #should_lock = _sql_requires_lock(sql) if use_file_lock is None else use_file_lock
     #if should_lock:
@@ -136,13 +137,17 @@ def retryable_execute(
         except sqlite3.OperationalError as exc:
             message = str(exc).lower()
             if "locked" in message or "busy" in message:
-                time.sleep(0.05)
+                time.sleep(retry_interval)
                 continue
             raise
 
 
 def retryable_executemany(
-    target: sqlite3.Connection | sqlite3.Cursor, sql: str, seq_of_parameters
+    target: sqlite3.Connection | sqlite3.Cursor,
+    sql: str,
+    seq_of_parameters,
+    *,
+    retry_interval: float = 0.5,
 ):
     if not isinstance(seq_of_parameters, (list, tuple)):
         seq_of_parameters = list(seq_of_parameters)
@@ -154,7 +159,7 @@ def retryable_executemany(
         except sqlite3.OperationalError as exc:
             message = str(exc).lower()
             if "locked" in message or "busy" in message:
-                time.sleep(0.05)
+                time.sleep(retry_interval)
                 continue
             raise
 

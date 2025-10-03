@@ -11,7 +11,7 @@ from time import sleep, time
 
 
 class FileLock:
-    def __init__(self, path: Path | str, interval: float = 0.05, timeout: float | None = None) -> None:
+    def __init__(self, path: Path | str, interval: float = 0.5, timeout: float | None = None) -> None:
         self.path = Path(path)
         self.interval = interval
         self.timeout = timeout

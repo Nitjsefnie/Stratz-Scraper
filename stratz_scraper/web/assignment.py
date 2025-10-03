@@ -16,6 +16,7 @@ from ..database import (
 ASSIGNMENT_CLEANUP_KEY = "last_assignment_cleanup"
 HERO_ASSIGNMENT_CURSOR_KEY = "hero_assignment_cursor"
 ASSIGNMENT_CLEANUP_INTERVAL = timedelta(seconds=60)
+ASSIGNMENT_RETRY_INTERVAL = 0.05
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -118,6 +119,7 @@ def maybe_run_assignment_cleanup(conn) -> bool:
         ON CONFLICT(key) DO UPDATE SET value=excluded.value
         """,
         (ASSIGNMENT_CLEANUP_KEY, now.isoformat()),
+        retry_interval=ASSIGNMENT_RETRY_INTERVAL,
     )
     return True
 
@@ -145,6 +147,7 @@ def _assign_discovery(cur) -> dict | None:
           AND (assigned_to IS NULL OR assigned_to='discover')
         RETURNING steamAccountId, depth
         """,
+        retry_interval=ASSIGNMENT_RETRY_INTERVAL,
     ).fetchone()
     if not assigned:
         return None
@@ -167,6 +170,7 @@ def _restart_discovery_cycle(cur) -> bool:
             assigned_at=CASE WHEN assigned_to='discover' THEN NULL ELSE assigned_at END,
             assigned_to=CASE WHEN assigned_to='discover' THEN NULL ELSE assigned_to END
         """,
+        retry_interval=ASSIGNMENT_RETRY_INTERVAL,
     )
     return True
 
@@ -176,6 +180,7 @@ def _assign_next_hero(cur) -> dict | None:
         cur,
         "SELECT value FROM meta WHERE key=?",
         (HERO_ASSIGNMENT_CURSOR_KEY,),
+        retry_interval=ASSIGNMENT_RETRY_INTERVAL,
     ).fetchone()
     try:
         last_cursor = int(last_cursor_row["value"]) if last_cursor_row else 0
@@ -204,6 +209,7 @@ def _assign_next_hero(cur) -> dict | None:
             RETURNING steamAccountId
             """,
             (offset,),
+            retry_interval=ASSIGNMENT_RETRY_INTERVAL,
         ).fetchone()
         if assigned_row:
             steam_account_id = int(assigned_row["steamAccountId"])
@@ -215,6 +221,7 @@ def _assign_next_hero(cur) -> dict | None:
                 ON CONFLICT(key) DO UPDATE SET value=excluded.value
                 """,
                 (HERO_ASSIGNMENT_CURSOR_KEY, str(steam_account_id)),
+                retry_interval=ASSIGNMENT_RETRY_INTERVAL,
             )
             return {
                 "type": "fetch_hero_stats",
@@ -233,7 +240,11 @@ def assign_next_task(*, run_cleanup: bool = False) -> dict | None:
         if run_cleanup:
             maybe_run_assignment_cleanup(conn)
 
-        retryable_execute(conn, "BEGIN IMMEDIATE")
+        retryable_execute(
+            conn,
+            "BEGIN IMMEDIATE",
+            retry_interval=ASSIGNMENT_RETRY_INTERVAL,
+        )
         cur = conn.cursor()
 
         counter_row = cur.execute(
@@ -287,6 +298,7 @@ def assign_next_task(*, run_cleanup: bool = False) -> dict | None:
                           AND assigned_to IS NULL
                         RETURNING steamAccountId
                         """,
+                        retry_interval=ASSIGNMENT_RETRY_INTERVAL,
                     ).fetchone()
                     if assigned_row:
                         candidate_payload = {
@@ -337,6 +349,7 @@ def _increment_assignment_counter(cur) -> int:
         RETURNING CAST(value AS INTEGER) AS value
         """,
         ("task_assignment_counter",),
+        retry_interval=ASSIGNMENT_RETRY_INTERVAL,
     ).fetchone()
     if not row:
         return 0
