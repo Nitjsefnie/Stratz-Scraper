@@ -91,11 +91,11 @@ def create_app() -> Flask:
                         jsonify({"status": "error", "message": "Player not found"}),
                         404,
                     )
+            next_task = assign_next_task() if request_new_task else None
             submit_hero_submission(
                 steam_account_id,
                 heroes_payload,
             )
-            next_task = assign_next_task() if request_new_task else None
             response_payload = {"status": "ok"}
             if request_new_task:
                 response_payload["task"] = next_task
@@ -150,6 +150,7 @@ def create_app() -> Flask:
                         jsonify({"status": "error", "message": "Player not found"}),
                         404,
                     )
+            next_task = assign_next_task() if request_new_task else None
             submit_discover_submission(
                 steam_account_id,
                 discovered_payload,
@@ -157,7 +158,6 @@ def create_app() -> Flask:
                 provided_depth,
                 assignment_depth,
             )
-            next_task = assign_next_task() if request_new_task else None
             response_payload = {"status": "ok"}
             if request_new_task:
                 response_payload["task"] = next_task
