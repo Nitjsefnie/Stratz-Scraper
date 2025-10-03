@@ -9,14 +9,16 @@
   <body>
     <main class="container">
       <header class="page-header">
-        <div>
+        <div class="page-header-text">
           <h1>Dota Distributed Scraper</h1>
           <p class="lead">
             Coordinate browser workers to fetch Stratz hero performance data and push the
             best heroes for each player into a shared database.
           </p>
         </div>
-        <div class="status-chip" id="runStatus">Idle</div>
+        <div class="page-header-meta">
+          <a class="header-button secondary" href="{{ url_for('leaderboards') }}">View overall leaderboard</a>
+        </div>
       </header>
 
       <section class="card">
@@ -25,15 +27,20 @@
           Add one or more Stratz API tokens. They are stored only in your browser using local
           storage.
         </p>
-        <div id="tokenList" class="token-list" aria-live="polite"></div>
-        <div class="token-controls">
-          <button id="addToken" type="button" class="secondary">Add token</button>
-          <div class="token-control-group">
-            <button id="exportTokens" type="button" class="secondary">Export all</button>
-            <button id="importTokens" type="button" class="secondary">Import all</button>
+        <div class="token-toolbar">
+          <div id="tokenSummary" class="token-summary-text" role="status" aria-live="polite">
+            No tokens configured.
           </div>
-          <input id="importTokensFile" type="file" accept="application/json" hidden>
+          <div class="token-controls">
+            <button id="addToken" type="button" class="secondary">Add token</button>
+            <div class="token-control-group">
+              <button id="exportTokens" type="button" class="secondary">Export all</button>
+              <button id="importTokens" type="button" class="secondary">Import all</button>
+            </div>
+            <input id="importTokensFile" type="file" accept="application/json" hidden>
+          </div>
         </div>
+        <div id="tokenList" class="token-list" aria-live="polite"></div>
       </section>
 
       <section class="card control-panel">
