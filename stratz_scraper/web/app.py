@@ -13,7 +13,11 @@ from ..database import (
 )
 from .assignment import assign_next_task, ensure_assignment_cleanup_scheduler
 from .config import STATIC_DIR, TEMPLATE_DIR
-from .leaderboard import fetch_best_payload, fetch_hero_leaderboard
+from .leaderboard import (
+    fetch_best_payload,
+    fetch_hero_leaderboard,
+    fetch_overall_leaderboard,
+)
 from .progress import fetch_progress
 from .request_utils import is_local_request
 from .seed import seed_players
@@ -182,6 +186,20 @@ def create_app() -> Flask:
         seed_players(start, end)
         return jsonify({"seeded": [start, end]})
 
+    @app.get("/leaderboards")
+    @app.get("/leaderboards/")
+    def leaderboards():
+        players = fetch_overall_leaderboard()
+        return render_template(
+            "leaderboard.html",
+            hero_name="Overall",
+            hero_slug=None,
+            players=players,
+            heading="Overall Leaderboard",
+            page_title="Overall Leaderboard",
+            description="Top 100 players by matches played across all heroes.",
+        )
+
     @app.get("/leaderboards/<hero_slug>")
     def hero_leaderboard(hero_slug: str):
         hero_payload = fetch_hero_leaderboard(hero_slug)
@@ -193,6 +211,9 @@ def create_app() -> Flask:
             hero_name=hero_name,
             hero_slug=slug,
             players=players,
+            heading=f"{hero_name} Leaderboard",
+            page_title=f"{hero_name} Leaderboard",
+            description=f"Top 100 players by matches played on {hero_name}.",
         )
 
     @app.get("/best")

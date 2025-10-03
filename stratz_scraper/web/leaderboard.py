@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple
 from ..database import db_connection
 from ..heroes import HERO_SLUGS, hero_slug
 
-__all__ = ["fetch_best_payload", "fetch_hero_leaderboard"]
+__all__ = ["fetch_best_payload", "fetch_hero_leaderboard", "fetch_overall_leaderboard"]
 
 
 def fetch_hero_leaderboard(slug: str) -> Optional[Tuple[str, str, List[dict]]]:
@@ -36,6 +36,29 @@ def fetch_hero_leaderboard(slug: str) -> Optional[Tuple[str, str, List[dict]]]:
         for row in rows
     ]
     return hero_name, normalized, players
+
+
+def fetch_overall_leaderboard() -> List[Dict[str, int]]:
+    with db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT steamAccountId, SUM(matches) AS matches, SUM(wins) AS wins
+            FROM hero_stats
+            GROUP BY steamAccountId
+            ORDER BY matches DESC, wins DESC, steamAccountId ASC
+            LIMIT 100
+            """
+        ).fetchall()
+    players: List[Dict[str, int]] = []
+    for row in rows:
+        players.append(
+            {
+                "steamAccountId": row["steamAccountId"],
+                "matches": row["matches"] or 0,
+                "wins": row["wins"] or 0,
+            }
+        )
+    return players
 
 
 def fetch_best_payload() -> List[Dict]:
