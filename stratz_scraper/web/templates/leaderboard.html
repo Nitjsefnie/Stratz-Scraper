@@ -2,16 +2,19 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <title>{{ hero_name }} Leaderboard - Dota Distributed Scraper</title>
+    {% set resolved_title = page_title or (hero_name ~ ' Leaderboard') %}
+    <title>{{ resolved_title }} - Dota Distributed Scraper</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
   </head>
   <body>
     <main class="container">
       <header class="page-header">
+        {% set resolved_heading = heading or (hero_name ~ ' Leaderboard') %}
+        {% set resolved_description = description or ('Top 100 players by matches played on ' ~ hero_name ~ '.') %}
         <div>
-          <h1>{{ hero_name }} Leaderboard</h1>
-          <p class="lead">Top 100 players by matches played on {{ hero_name }}.</p>
+          <h1>{{ resolved_heading }}</h1>
+          <p class="lead">{{ resolved_description }}</p>
         </div>
         <a href="{{ url_for('index') }}">Back to dashboard</a>
       </header>
