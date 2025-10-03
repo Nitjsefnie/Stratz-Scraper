@@ -88,26 +88,17 @@ def _extract_discovered_counts(values: Iterable[object]) -> List[tuple[int, int]
     return [(pid, aggregated[pid]) for pid in order]
 
 
-def _resolve_next_depth(data: dict, assignment_row) -> int:
-    provided_next_depth = data.get("nextDepth")
+def _resolve_next_depth(
+    provided_next_depth: int | None,
+    provided_depth: int | None,
+    assignment_depth: int | None,
+) -> int:
     if provided_next_depth is not None:
-        try:
-            return int(provided_next_depth)
-        except (TypeError, ValueError):
-            pass
-    provided_depth = data.get("depth")
-    parent_depth_value = None
-    if provided_depth is not None:
-        try:
-            parent_depth_value = int(provided_depth)
-        except (TypeError, ValueError):
-            parent_depth_value = None
+        return provided_next_depth
+    parent_depth_value = provided_depth
     if parent_depth_value is None:
-        if assignment_row and assignment_row["depth"] is not None:
-            try:
-                parent_depth_value = int(assignment_row["depth"])
-            except (TypeError, ValueError):
-                parent_depth_value = 0
+        if assignment_depth is not None:
+            parent_depth_value = assignment_depth
         else:
             parent_depth_value = 0
     return parent_depth_value + 1
@@ -198,10 +189,27 @@ def create_app() -> Flask:
                 steam_account_id = int(data["steamAccountId"])
             except (KeyError, TypeError, ValueError):
                 return jsonify({"status": "error", "message": "steamAccountId is required"}), 400
+            provided_next_depth = None
+            provided_depth = None
+            next_depth_raw = data.get("nextDepth")
+            if next_depth_raw is not None:
+                try:
+                    provided_next_depth = int(next_depth_raw)
+                except (TypeError, ValueError):
+                    provided_next_depth = None
+            depth_raw = data.get("depth")
+            if depth_raw is not None:
+                try:
+                    provided_depth = int(depth_raw)
+                except (TypeError, ValueError):
+                    provided_depth = None
+            needs_assignment_depth = (
+                provided_next_depth is None and provided_depth is None
+            )
             discovered_counts = _extract_discovered_counts(data.get("discovered", []))
             with db_connection(write=True) as conn:
                 cur = conn.cursor()
-                assignment_row = retryable_execute(
+                update_cursor = retryable_execute(
                     cur,
                     """
                     UPDATE players
@@ -209,16 +217,31 @@ def create_app() -> Flask:
                         assigned_to=NULL,
                         assigned_at=NULL
                     WHERE steamAccountId=?
-                    RETURNING depth
                     """,
                     (steam_account_id,),
-                ).fetchone()
-            if assignment_row is None:
+                )
+                assignment_depth = None
+                if needs_assignment_depth:
+                    assignment_row = retryable_execute(
+                        cur,
+                        "SELECT depth FROM players WHERE steamAccountId=?",
+                        (steam_account_id,),
+                    ).fetchone()
+                    if assignment_row is not None and assignment_row["depth"] is not None:
+                        try:
+                            assignment_depth = int(assignment_row["depth"])
+                        except (TypeError, ValueError):
+                            assignment_depth = None
+            if update_cursor.rowcount == 0:
                 return (
                     jsonify({"status": "error", "message": "Player not found"}),
                     404,
                 )
-            next_depth_value = _resolve_next_depth(data, assignment_row)
+            next_depth_value = _resolve_next_depth(
+                provided_next_depth,
+                provided_depth,
+                assignment_depth,
+            )
             if discovered_counts:
                 submit_discover_submission(
                     steam_account_id,
