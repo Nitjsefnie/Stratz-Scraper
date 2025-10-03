@@ -42,9 +42,8 @@ def fetch_overall_leaderboard() -> List[Dict[str, int]]:
     with db_connection() as conn:
         rows = conn.execute(
             """
-            SELECT steamAccountId, SUM(matches) AS matches, SUM(wins) AS wins
+            SELECT steamAccountId, matches, wins, heroId
             FROM hero_stats
-            GROUP BY steamAccountId
             ORDER BY matches DESC, wins DESC, steamAccountId ASC
             LIMIT 100
             """
