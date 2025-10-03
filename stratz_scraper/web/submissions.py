@@ -65,7 +65,6 @@ def process_hero_submission(
     steam_account_id: int,
     hero_stats_rows: Sequence[tuple[int, int, int, int]],
     best_rows: Sequence[tuple[int, str, int, int, int]],
-    assigned_at_value: str | None,
 ) -> None:
     try:
         with db_connection(write=True) as conn:
@@ -128,7 +127,6 @@ def process_discover_submission(
     steam_account_id: int,
     discovered_counts: Iterable[tuple[int, int]],
     next_depth_value: int,
-    assigned_at_value: str | None,
 ) -> None:
     try:
         with db_connection(write=True) as conn:
@@ -194,14 +192,12 @@ def submit_hero_submission(
     steam_account_id: int,
     hero_stats_rows: Sequence[tuple[int, int, int, int]],
     best_rows: Sequence[tuple[int, str, int, int, int]],
-    assigned_at_value: str | None,
 ) -> None:
     BACKGROUND_EXECUTOR.submit(
         process_hero_submission,
         steam_account_id,
         hero_stats_rows,
         best_rows,
-        assigned_at_value,
     )
 
 
@@ -209,12 +205,10 @@ def submit_discover_submission(
     steam_account_id: int,
     discovered_counts: Iterable[tuple[int, int]],
     next_depth_value: int,
-    assigned_at_value: str | None,
 ) -> None:
     BACKGROUND_EXECUTOR.submit(
         process_discover_submission,
         steam_account_id,
         tuple(discovered_counts),
         next_depth_value,
-        assigned_at_value,
     )
