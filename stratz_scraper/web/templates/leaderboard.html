@@ -28,6 +28,7 @@
               <tr>
                 <th scope="col">Rank</th>
                 <th scope="col">Steam Account ID</th>
+                <th scope="col">Hero</th>
                 <th scope="col">Matches</th>
                 <th scope="col">Wins</th>
                 <th scope="col">Win Rate</th>
@@ -39,6 +40,17 @@
               <tr>
                 <td>{{ loop.index }}</td>
                 <td><a href="https://stratz.com/players/{{ player.steamAccountId }}" target="_blank" rel="noopener">{{ player.steamAccountId }}</a></td>
+                <td>
+                  {% if player.heroName %}
+                    {% if player.heroSlug %}
+                    <a href="{{ url_for('hero_leaderboard', hero_slug=player.heroSlug) }}">{{ player.heroName }}</a>
+                    {% else %}
+                    {{ player.heroName }}
+                    {% endif %}
+                  {% else %}
+                    <span class="muted">Unknown</span>
+                  {% endif %}
+                </td>
                 <td>{{ player.matches }}</td>
                 <td>{{ player.wins }}</td>
                 <td>{{ '%.1f' % win_rate }}%</td>

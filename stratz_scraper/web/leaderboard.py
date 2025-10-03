@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 
 from ..database import db_connection
-from ..heroes import HERO_SLUGS, hero_slug
+from ..heroes import HEROES, HERO_SLUGS, hero_slug
 
 __all__ = ["fetch_best_payload", "fetch_hero_leaderboard", "fetch_overall_leaderboard"]
 
@@ -38,7 +38,7 @@ def fetch_hero_leaderboard(slug: str) -> Optional[Tuple[str, str, List[dict]]]:
     return hero_name, normalized, players
 
 
-def fetch_overall_leaderboard() -> List[Dict[str, int]]:
+def fetch_overall_leaderboard() -> List[Dict[str, object]]:
     with db_connection() as conn:
         rows = conn.execute(
             """
@@ -48,13 +48,18 @@ def fetch_overall_leaderboard() -> List[Dict[str, int]]:
             LIMIT 100
             """
         ).fetchall()
-    players: List[Dict[str, int]] = []
+    players: List[Dict[str, object]] = []
     for row in rows:
+        hero_id = row["heroId"]
+        hero_name = HEROES.get(hero_id)
+        hero_slug_value = hero_slug(hero_name) if isinstance(hero_name, str) else None
         players.append(
             {
                 "steamAccountId": row["steamAccountId"],
                 "matches": row["matches"] or 0,
                 "wins": row["wins"] or 0,
+                "heroName": hero_name,
+                "heroSlug": hero_slug_value,
             }
         )
     return players
