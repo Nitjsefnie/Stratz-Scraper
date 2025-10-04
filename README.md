@@ -1,62 +1,43 @@
 # Stratz Distributed Scraper Documentation
 
 ## Overview
-The Stratz Distributed Scraper coordinates browser workers that call the [Stratz GraphQL API](https://stratz.com/) to gather player information. The backend now runs in two phases: workers first fetch hero statistics for every discovered account, then they branch out to discover additional accounts from recent matches. A lightweight breadth-first search (BFS) queue stored in SQLite tracks which phase each account is currently in, ensuring that discovery only begins once every known player has complete hero data.
+The Stratz Distributed Scraper coordinates browser workers that call the [Stratz GraphQL API](https://stratz.com/) to gather player information. The backend runs in two phases: workers first fetch hero statistics for every discovered account, then they branch out to discover additional accounts from recent matches. A breadth-first queue stored in PostgreSQL tracks which phase each account is currently in so discovery only begins once every known player has complete hero data.
 
 ## Application Components
 
 ### Flask Backend (`app.py`)
-The Flask application serves both the single-page front-end and the JSON API used by workers. On startup it recreates the schema if the database file is missing, seeds the root Steam account (`293053907`), and clears any lingering task assignments so work can be reassigned cleanly.【F:app.py†L1-L25】
+The Flask application serves both the single-page front-end and the JSON API used by workers. On startup it ensures the PostgreSQL schema exists, seeds the root Steam account (`293053907`), clears any lingering task assignments, and starts a background cleanup loop that releases stale work. Key routes include:
 
-Key routes include:
+- `GET /`: Renders the operator dashboard and exposes a local-only seeding form when the request originates from localhost.
+- `POST /task`: Returns the next unit of work. While any account has unfinished hero statistics, workers receive `fetch_hero_stats` tasks. When every player is marked complete for hero stats the API hands out `discover_matches` tasks instead.
+- `POST /task/reset`: Releases a task back into the queue. Hero tasks clear any partial hero rows, discovery tasks re-open the player for future crawling, and unknown task types simply clear the assignment flag.
+- `POST /submit`: Accepts either hero statistics or discovery payloads. Hero submissions upsert per-hero performance, update the leaderboard, and flip the player's `hero_done` flag. Discovery submissions insert any newly found accounts (with incremented depth) and mark the submitting account's discovery phase as complete.
+- `GET /progress`: Reports total players along with counts of accounts that have completed hero statistics and discovery.
+- `GET /seed`: Local-only endpoint for inserting a contiguous range of seed accounts at depth 0.
+- `GET /best` and `/leaderboards`: Render aggregated leaderboards for all heroes or individual picks.
 
-- `GET /`: Renders the user interface template and exposes a local-only seeding form when the request originates from localhost.【F:app.py†L44-L58】【F:templates/index.html†L1-L67】
-- `POST /task`: Returns the next unit of work. While any account has unfinished hero statistics, workers receive `fetch_hero_stats` tasks. Only after every player is marked complete for hero stats do workers receive `discover_matches` tasks. Assignments are persisted in the `players` table so a task can be safely retried if a worker crashes.【F:app.py†L60-L115】
-- `POST /task/reset`: Releases a task back into the queue. Hero tasks clear any partial hero rows, discovery tasks re-open the player for future crawling, and unknown task types simply clear the assignment flag.【F:app.py†L117-L152】
-- `POST /submit`: Accepts either hero statistics or discovery payloads. Hero submissions upsert per-hero performance, update the leaderboard, and flip the player's `hero_done` flag. Discovery submissions insert any newly found accounts (with incremented depth) and mark the submitting account's discovery phase as complete.【F:app.py†L154-L222】
-- `GET /progress`: Reports total players along with counts of accounts that have completed hero statistics and discovery. The UI displays both numbers side by side.【F:app.py†L224-L241】【F:static/js/app.js†L216-L226】
-- `GET /seed`: Local-only endpoint for inserting a contiguous range of seed accounts at depth 0.【F:app.py†L243-L270】
-- `GET /best`: Returns the current leaderboard of best performers per hero.【F:app.py†L272-L277】
+### Database Layer (`stratz_scraper/database.py`)
+The database module now targets PostgreSQL via `psycopg`. Connections are pooled per-thread for writers and opened on-demand for read-only operations. `ensure_schema_exists()` creates the schema when needed, makes sure all indexes exist, and automatically migrates data from an existing `dota.db` SQLite file into PostgreSQL the first time the server starts after the upgrade. The module exposes helpers for retrying statements that might be affected by transient locks, performing batched writes inside transactions, and releasing stale task assignments.
 
-The app still runs in debug mode on port 80 when launched directly.【F:app.py†L1-L7】
+A default connection string of `postgresql://postgres:postgres@localhost:5432/stratz_scraper` is used when the `DATABASE_URL` environment variable is not provided.
 
-### Database Layer (`database.py`)
-`ensure_schema` now drops the legacy tables and recreates the schema with explicit BFS metadata: each player row stores the Steam account ID, depth, assignment metadata, and completion flags for both hero and discovery phases. Hero statistics are keyed by `(steamAccountId, heroId)`, the `best` table retains its existing structure, and the `meta` table persists simple key/value settings. `release_incomplete_assignments` clears any `assigned_to` markers regardless of phase so the queue is ready after restarts.【F:database.py†L1-L52】【F:database.py†L55-L68】
+### Hero Metadata (`stratz_scraper/heroes.py`)
+Hero names remain bundled in `heroes.py`, providing a mapping that the backend uses to label leaderboard entries. Unknown hero IDs from Stratz are ignored to avoid polluting the tables.
 
-### Hero Metadata (`heroes.py`)
-Hero names remain bundled in `heroes.py`, providing a mapping that the backend uses to label leaderboard entries. Unknown hero IDs from Stratz are ignored to avoid polluting the tables.【F:heroes.py†L1-L87】【F:app.py†L181-L203】
-
-## Front-End Behavior
-
-### Template and Layout (`templates/index.html`)
-The HTML template structures the UI into cards for token management, worker controls, optional seeding, an activity log, and the leaderboard table. It loads the updated JavaScript bundle and stylesheet to drive the application.【F:templates/index.html†L1-L67】
-
-### Styling (`static/css/styles.css`)
-Styling remains unchanged, providing responsive layouts, log formatting, and status chips that surface worker state at a glance.【F:static/css/styles.css†L1-L207】
-
-### Client-Side Logic (`static/js/app.js`)
-The browser script orchestrates tokens, workers, and API interactions:
-
-- **State Management & Persistence**: Tokens, request limits, and worker status are tracked in `state` and persisted to `localStorage`. UI helpers keep the chip, backoff, and quota displays in sync.【F:static/js/app.js†L1-L229】【F:static/js/app.js†L372-L452】
-- **Task Handling**: Workers now interpret typed tasks. Hero tasks call the `PlayerHeroes` GraphQL query and submit `{heroId, matches, wins}` payloads. Discovery tasks call the `PlayerMatches` query, collect unique Steam IDs from match rosters, and send them back so the backend can grow the BFS frontier.【F:static/js/app.js†L231-L347】【F:static/js/app.js†L481-L538】
-- **Recovery Logic**: If a worker errors out, the task is reset with both its Steam ID and type so the backend can restore the correct phase state. Exponential backoff continues to throttle repeated failures.【F:static/js/app.js†L481-L538】
-- **Initialization**: On load the script restores saved tokens, refreshes progress (showing both hero and discovery completion counts), and fetches the leaderboard.【F:static/js/app.js†L539-L606】
-
-## Data Flow
-1. **Startup**: If `dota.db` is missing, the server rebuilds the schema and seeds the initial Steam account. Any stale assignments are cleared so workers start fresh.【F:app.py†L1-L25】【F:database.py†L55-L68】
-2. **Hero Phase**: Workers repeatedly receive `fetch_hero_stats` tasks until every known account is marked complete. Each submission updates aggregated hero statistics and the per-hero leaderboard.【F:app.py†L60-L203】【F:static/js/app.js†L481-L506】
-3. **Discovery Phase**: Once hero coverage is complete, workers switch to `discover_matches` tasks. Newly discovered accounts are inserted at the next BFS depth with both phase flags reset, returning the system to the hero phase for those accounts.【F:app.py†L82-L222】【F:static/js/app.js†L506-L538】
-4. **Progress Monitoring**: The `/progress` endpoint exposes total players and per-phase completion counts so operators can see how far the crawl has progressed.【F:app.py†L224-L241】【F:static/js/app.js†L216-L226】
-5. **Leaderboard**: The `/best` endpoint aggregates the highest match counts per hero, allowing the UI to display top performers across all crawled accounts.【F:app.py†L202-L221】【F:app.py†L272-L277】
+## Task Flow
+1. **Startup**: The server ensures the PostgreSQL schema exists and seeds the initial Steam account. If a legacy `dota.db` file is present its contents are copied into PostgreSQL and the file is renamed with a `.converted` suffix.
+2. **Hero Phase**: Workers repeatedly receive `fetch_hero_stats` tasks until every known account is marked complete. Each submission updates aggregated hero statistics and the per-hero leaderboard.
+3. **Discovery Phase**: Once hero coverage is complete, workers switch to `discover_matches` tasks. Newly discovered accounts are inserted at the next BFS depth with both phase flags reset, returning the system to the hero phase for those accounts.
+4. **Progress Monitoring**: The `/progress` endpoint exposes total players and per-phase completion counts so operators can see how far the crawl has progressed.
+5. **Leaderboard**: Leaderboard endpoints aggregate the highest match counts per hero and across all heroes for display in the UI.
 
 ## Running the App
-Start the development server with:
+1. Ensure a PostgreSQL instance is available and create a database (the defaults assume a database named `stratz_scraper` owned by the `postgres` user).
+2. Export `DATABASE_URL` if different credentials or hosts are required.
+3. Install dependencies: `pip install Flask psycopg[binary]`.
+4. Start the development server with `python app.py`. The app listens on `0.0.0.0:80`.
 
-```bash
-python app.py
-```
-
-The app listens on `0.0.0.0:80`. Ensure the process has permission to create `dota.db`; on first boot it will populate the schema and seed the root account automatically. When deploying behind a proxy, forward the original client IP so the `/seed` endpoint remains restricted to local administrators via `is_local_request`.【F:app.py†L1-L7】【F:stratz_scraper/web/app.py†L1-L434】
+When deploying behind a proxy, forward the original client IP so the `/seed` endpoint remains restricted to local administrators via `is_local_request`.
 
 ## Database Schema Reference
 
@@ -67,16 +48,12 @@ The app listens on `0.0.0.0:80`. Ensure the process has permission to create `do
 | `best` | Best-performing player per hero. | `hero_id`, `player_id`, `matches`, `wins` |
 | `meta` | Key/value metadata for scheduler features. | `key`, `value` |
 
-`ensure_schema` recreates these tables when invoked, enabling quick resets during development, while `release_incomplete_assignments` clears any stuck tasks during startup.【F:database.py†L1-L68】
-
 ## Security and Error Handling Considerations
-- **Token Privacy**: Stratz API tokens remain in the browser's `localStorage` and are only transmitted in GraphQL requests to Stratz. Removing a token row deletes it from storage.【F:static/js/app.js†L121-L229】
-- **Task Recovery**: Workers reset tasks with both the Steam ID and task type so the backend can reopen the correct phase without data corruption. Startup cleanup also clears any half-finished assignments after crashes.【F:static/js/app.js†L481-L538】【F:database.py†L55-L68】
-- **Backoff Strategy**: The exponential backoff loop remains in place to avoid hammering the API during failure storms, with the UI surfacing the minimum active backoff.【F:static/js/app.js†L1-L119】【F:static/js/app.js†L481-L538】
+- **Token Privacy**: Stratz API tokens remain in the browser's `localStorage` and are only transmitted in GraphQL requests to Stratz. Removing a token row deletes it from storage.
+- **Task Recovery**: Workers reset tasks with both the Steam ID and task type so the backend can reopen the correct phase without data corruption. Startup cleanup also clears any half-finished assignments after crashes.
+- **Backoff Strategy**: The exponential backoff loop avoids hammering the API during failure storms, with the UI surfacing the minimum active backoff.
 
 ## Extending the Application
-- Adjust BFS depth handling or implement depth limits to bound how far the scraper explores from the seed account.【F:app.py†L60-L222】
-- Add additional progress metrics (e.g., number of newly discovered accounts per depth) by extending the `/progress` endpoint and UI display.【F:app.py†L224-L241】【F:static/js/app.js†L216-L226】
-- Enhance the leaderboard with win-rate calculations or timestamps to provide richer insights from the aggregated stats.【F:app.py†L181-L203】【F:app.py†L272-L277】
-
-This documentation reflects the BFS-based scraping workflow implemented in this repository.
+- Adjust BFS depth handling or implement depth limits to bound how far the scraper explores from the seed account.
+- Add additional progress metrics (e.g., number of newly discovered accounts per depth) by extending the `/progress` endpoint and UI display.
+- Enhance the leaderboard with win-rate calculations or timestamps to provide richer insights from the aggregated stats.

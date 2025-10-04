@@ -27,11 +27,11 @@ def _unmark_hero_task(steam_account_id: int) -> None:
                 cur,
                 """
                 UPDATE players
-                SET hero_done=0,
+                SET hero_done=FALSE,
                     hero_refreshed_at=NULL,
                     assigned_to=NULL,
                     assigned_at=NULL
-                WHERE steamAccountId=?
+                WHERE steamAccountId=%s
                 """,
                 (steam_account_id,),
             )
@@ -49,10 +49,10 @@ def _unmark_discover_task(steam_account_id: int) -> None:
                 cur,
                 """
                 UPDATE players
-                SET discover_done=0,
+                SET discover_done=FALSE,
                     assigned_to=NULL,
                     assigned_at=NULL
-                WHERE steamAccountId=?
+                WHERE steamAccountId=%s
                 """,
                 (steam_account_id,),
             )
@@ -174,7 +174,7 @@ def process_hero_submission(
                     cur,
                     """
                     INSERT INTO hero_stats (steamAccountId, heroId, matches, wins)
-                    VALUES (?,?,?,?)
+                    VALUES (%s,%s,%s,%s)
                     ON CONFLICT(steamAccountId, heroId) DO UPDATE SET
                         matches = CASE
                             WHEN excluded.matches > hero_stats.matches
@@ -194,7 +194,7 @@ def process_hero_submission(
                     cur,
                     """
                     INSERT INTO best (hero_id, hero_name, player_id, matches, wins)
-                    VALUES (?,?,?,?,?)
+                    VALUES (%s,%s,%s,%s,%s)
                     ON CONFLICT(hero_id) DO UPDATE SET
                         matches=excluded.matches,
                         wins=excluded.wins,
@@ -249,7 +249,7 @@ def process_discover_submission(
                         discover_done,
                         seen_count
                     )
-                    VALUES (?,?,0,0,?)
+                    VALUES (%s,%s,FALSE,FALSE,%s)
                     ON CONFLICT(steamAccountId) DO UPDATE SET
                         depth=CASE
                             WHEN players.depth IS NULL THEN excluded.depth

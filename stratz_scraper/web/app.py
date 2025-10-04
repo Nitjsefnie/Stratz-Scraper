@@ -82,11 +82,11 @@ def create_app() -> Flask:
                     cur,
                     """
                     UPDATE players
-                    SET hero_done=1,
+                    SET hero_done=TRUE,
                         assigned_to=NULL,
                         assigned_at=NULL,
                         hero_refreshed_at=CURRENT_TIMESTAMP
-                    WHERE steamAccountId=?
+                    WHERE steamAccountId=%s
                     """,
                     (steam_account_id,),
                 )
@@ -129,7 +129,7 @@ def create_app() -> Flask:
                 cur = conn.cursor()
                 assignment_row = retryable_execute(
                     cur,
-                    "SELECT depth FROM players WHERE steamAccountId=?",
+                    "SELECT depth FROM players WHERE steamAccountId=%s",
                     (steam_account_id,),
                 ).fetchone()
                 if assignment_row is None:
@@ -142,10 +142,10 @@ def create_app() -> Flask:
                     cur,
                     """
                     UPDATE players
-                    SET discover_done=1,
+                    SET discover_done=TRUE,
                         assigned_to=NULL,
                         assigned_at=NULL
-                    WHERE steamAccountId=?
+                    WHERE steamAccountId=%s
                     """,
                     (steam_account_id,),
                 )

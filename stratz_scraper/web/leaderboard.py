@@ -21,7 +21,7 @@ def fetch_hero_leaderboard(slug: str) -> Optional[Tuple[str, str, List[dict]]]:
             """
             SELECT steamAccountId, matches, wins
             FROM hero_stats
-            WHERE heroId=?
+            WHERE heroId=%s
             ORDER BY matches DESC, wins DESC, steamAccountId ASC
             LIMIT 100
             """,
