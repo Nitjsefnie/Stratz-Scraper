@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from ..database import (
@@ -23,11 +22,6 @@ _LOGGER = logging.getLogger(__name__)
 _cleanup_thread: threading.Thread | None = None
 _cleanup_stop_event: threading.Event | None = None
 _cleanup_lock = threading.Lock()
-
-_checkpoint_executor = ThreadPoolExecutor(max_workers=1)
-_checkpoint_state_lock = threading.Lock()
-_checkpoint_pending = False
-
 
 __all__ = [
     "ASSIGNMENT_CLEANUP_INTERVAL",
@@ -68,36 +62,12 @@ def ensure_assignment_cleanup_scheduler() -> None:
         _cleanup_stop_event = stop_event
 
 
-def _run_wal_checkpoint() -> None:
-    global _checkpoint_pending
-    try:
-        with db_connection(write=True) as checkpoint_conn:
-            retryable_execute(
-                checkpoint_conn,
-                "PRAGMA wal_checkpoint(TRUNCATE);",
-            )
-    except Exception:  # pragma: no cover - best effort logging
-        _LOGGER.exception("Background WAL checkpoint failed")
-    finally:
-        with _checkpoint_state_lock:
-            _checkpoint_pending = False
-
-
-def _schedule_checkpoint() -> None:
-    global _checkpoint_pending
-    with _checkpoint_state_lock:
-        if _checkpoint_pending:
-            return
-        _checkpoint_pending = True
-    _checkpoint_executor.submit(_run_wal_checkpoint)
-
-
 def maybe_run_assignment_cleanup(conn) -> bool:
     """Release stale assignments if the cleanup interval has elapsed."""
     cur = conn.cursor()
     now = datetime.now(timezone.utc)
     last_cleanup_row = cur.execute(
-        "SELECT value FROM meta WHERE key=?",
+        "SELECT value FROM meta WHERE key=%s",
         (ASSIGNMENT_CLEANUP_KEY,),
     ).fetchone()
     if last_cleanup_row:
@@ -115,7 +85,7 @@ def maybe_run_assignment_cleanup(conn) -> bool:
         cur,
         """
         INSERT INTO meta (key, value)
-        VALUES (?, ?)
+        VALUES (%s, %s)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value
         """,
         (ASSIGNMENT_CLEANUP_KEY, now.isoformat()),
@@ -131,8 +101,8 @@ def _assign_discovery(cur) -> dict | None:
         WITH candidate AS (
             SELECT steamAccountId, depth
             FROM players
-            WHERE hero_done=1
-              AND discover_done=0
+            WHERE hero_done=TRUE
+              AND discover_done=FALSE
               AND (assigned_to IS NULL OR assigned_to='discover')
             ORDER BY (assigned_to IS NOT NULL),
                      seen_count DESC,
@@ -164,7 +134,7 @@ def _restart_discovery_cycle(cur) -> bool:
         cur,
         """
         UPDATE players
-        SET discover_done=0,
+        SET discover_done=FALSE,
             seen_count=0,
             depth=CASE WHEN depth=0 THEN 0 ELSE NULL END,
             assigned_at=CASE WHEN assigned_to='discover' THEN NULL ELSE assigned_at END,
@@ -178,7 +148,7 @@ def _restart_discovery_cycle(cur) -> bool:
 def _assign_next_hero(cur) -> dict | None:
     last_cursor_row = retryable_execute(
         cur,
-        "SELECT value FROM meta WHERE key=?",
+        "SELECT value FROM meta WHERE key=%s",
         (HERO_ASSIGNMENT_CURSOR_KEY,),
         retry_interval=ASSIGNMENT_RETRY_INTERVAL,
     ).fetchone()
@@ -194,9 +164,9 @@ def _assign_next_hero(cur) -> dict | None:
             WITH candidate AS (
                 SELECT steamAccountId
                 FROM players
-                WHERE hero_done=0
+                WHERE hero_done=FALSE
                   AND assigned_to IS NULL
-                  AND steamAccountId > ?
+                  AND steamAccountId > %s
                 ORDER BY steamAccountId ASC
                 LIMIT 1
             )
@@ -217,7 +187,7 @@ def _assign_next_hero(cur) -> dict | None:
                 cur,
                 """
                 INSERT INTO meta (key, value)
-                VALUES (?, ?)
+                VALUES (%s, %s)
                 ON CONFLICT(key) DO UPDATE SET value=excluded.value
                 """,
                 (HERO_ASSIGNMENT_CURSOR_KEY, str(steam_account_id)),
@@ -234,7 +204,6 @@ def _assign_next_hero(cur) -> dict | None:
 def assign_next_task(*, run_cleanup: bool = False) -> dict | None:
     """Select the next task to hand to a worker."""
     task_payload: dict | None = None
-    should_checkpoint = False
 
     with db_connection(write=True) as conn:
         if run_cleanup:
@@ -242,13 +211,13 @@ def assign_next_task(*, run_cleanup: bool = False) -> dict | None:
 
         retryable_execute(
             conn,
-            "BEGIN IMMEDIATE",
+            "BEGIN",
             retry_interval=ASSIGNMENT_RETRY_INTERVAL,
         )
         cur = conn.cursor()
 
         counter_row = cur.execute(
-            "SELECT value FROM meta WHERE key=?",
+            "SELECT value FROM meta WHERE key=%s",
             ("task_assignment_counter",),
         ).fetchone()
         try:
@@ -257,7 +226,6 @@ def assign_next_task(*, run_cleanup: bool = False) -> dict | None:
             current_count = 0
 
         loop_count = current_count
-        should_checkpoint = False
         task_payload = None
 
         try:
@@ -266,13 +234,11 @@ def assign_next_task(*, run_cleanup: bool = False) -> dict | None:
                 refresh_due = next_count % 10 == 0
                 discovery_due = next_count % 10000 == 0
 
-                should_truncate_wal = False
                 candidate_payload = None
 
                 if discovery_due:
                     candidate_payload = _assign_discovery(cur)
                     if candidate_payload is None and _restart_discovery_cycle(cur):
-                        should_truncate_wal = True
                         candidate_payload = _assign_discovery(cur)
 
                 if candidate_payload is None and refresh_due:
@@ -282,19 +248,19 @@ def assign_next_task(*, run_cleanup: bool = False) -> dict | None:
                         WITH candidate AS (
                             SELECT steamAccountId
                             FROM players
-                            WHERE hero_done=1
+                            WHERE hero_done=TRUE
                               AND assigned_to IS NULL
-                            ORDER BY COALESCE(hero_refreshed_at, '1970-01-01') ASC,
+                            ORDER BY COALESCE(hero_refreshed_at, '1970-01-01'::timestamptz) ASC,
                                      seen_count DESC,
                                      steamAccountId ASC
                             LIMIT 1
                         )
                         UPDATE players
-                        SET hero_done=0,
+                        SET hero_done=FALSE,
                             assigned_to='hero',
                             assigned_at=CURRENT_TIMESTAMP
                         WHERE steamAccountId IN (SELECT steamAccountId FROM candidate)
-                          AND hero_done=1
+                          AND hero_done=TRUE
                           AND assigned_to IS NULL
                         RETURNING steamAccountId
                         """,
@@ -311,15 +277,13 @@ def assign_next_task(*, run_cleanup: bool = False) -> dict | None:
 
                 if candidate_payload is None:
                     hero_pending = cur.execute(
-                        "SELECT 1 FROM players WHERE hero_done=0 LIMIT 1"
+                        "SELECT 1 FROM players WHERE hero_done=FALSE LIMIT 1"
                     ).fetchone()
                     if not hero_pending and not discovery_due:
                         candidate_payload = _assign_discovery(cur)
 
                 if candidate_payload is not None:
-                    counter_value = _increment_assignment_counter(cur)
-                    if should_truncate_wal or counter_value % 10000 == 0:
-                        should_checkpoint = True
+                    _increment_assignment_counter(cur)
                     task_payload = candidate_payload
                     break
 
@@ -333,9 +297,6 @@ def assign_next_task(*, run_cleanup: bool = False) -> dict | None:
         else:
             conn.commit()
 
-    if should_checkpoint:
-        _schedule_checkpoint()
-
     return task_payload
 
 
@@ -344,7 +305,7 @@ def _increment_assignment_counter(cur) -> int:
         cur,
         """
         INSERT INTO meta (key, value)
-        VALUES (?, '1')
+        VALUES (%s, '1')
         ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER) + 1
         RETURNING CAST(value AS INTEGER) AS value
         """,

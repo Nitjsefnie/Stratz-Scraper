@@ -14,13 +14,14 @@ def seed_players(start: int, end: int) -> None:
             retryable_execute(
                 cur,
                 """
-                INSERT OR IGNORE INTO players (
+                INSERT INTO players (
                     steamAccountId,
                     depth,
                     hero_done,
                     discover_done
                 )
-                VALUES (?,?,0,0)
+                VALUES (%s,%s,FALSE,FALSE)
+                ON CONFLICT (steamAccountId) DO NOTHING
                 """,
                 (pid, 0),
             )

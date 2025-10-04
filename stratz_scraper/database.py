@@ -1,77 +1,104 @@
 from __future__ import annotations
 
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from pathlib import Path
+import os
 import sqlite3
 import threading
 import time
+from typing import Iterable, Sequence
 
-from .locking import FileLock
+from psycopg import Connection, Cursor, Error, connect, errors
+from psycopg.rows import dict_row
 
 DB_PATH = Path("dota.db")
-LOCK_PATH = DB_PATH.with_suffix(".lock")
 INITIAL_PLAYER_ID = 293053907
 
-_INDEXES_ENSURED = False
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "postgresql://postgres:postgres@localhost:5432/stratz_scraper",
+)
+
 _THREAD_LOCAL = threading.local()
+_SCHEMA_INITIALIZED = False
+
+_RETRYABLE_ERRORS: tuple[type[BaseException], ...] = (
+    errors.DeadlockDetected,
+    errors.SerializationFailure,
+    errors.LockNotAvailable,
+)
 
 
-def ensure_schema_exists() -> None:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if DB_PATH.exists():
-        ensure_indexes()
-        return
-    with FileLock(LOCK_PATH):
-        if DB_PATH.exists():
-            ensure_indexes(lock_acquired=True)
-            return
-        ensure_schema(lock_acquired=True)
-
-
-def connect() -> sqlite3.Connection:
-    ensure_schema_exists()
-    connection = sqlite3.connect(DB_PATH, timeout=20, isolation_level=None)
-    connection.execute("PRAGMA busy_timeout = 20000")
-    connection.row_factory = sqlite3.Row
+def _create_connection(*, autocommit: bool) -> Connection:
+    connection = connect(DATABASE_URL, autocommit=autocommit)
+    connection.row_factory = dict_row
     return connection
 
 
-@contextmanager
-def db_connection(write: bool = False) -> sqlite3.Connection:
+def ensure_schema_exists() -> None:
+    global _SCHEMA_INITIALIZED
+    if _SCHEMA_INITIALIZED:
+        return
+    with _create_connection(autocommit=False) as conn:
+        ensure_schema(existing=conn)
+        ensure_indexes(existing=conn)
+        maybe_convert_sqlite(existing=conn)
+        conn.commit()
+    _SCHEMA_INITIALIZED = True
+
+
+def connect_pg(*, autocommit: bool = True) -> Connection:
     ensure_schema_exists()
-    conn = None
+    return _create_connection(autocommit=autocommit)
+
+
+@contextmanager
+def db_connection(*, write: bool = False) -> Iterable[Connection]:
+    ensure_schema_exists()
+    connection: Connection | None = None
     if write:
         cache = getattr(_THREAD_LOCAL, "connections", None)
         if cache is None:
             cache = {}
             _THREAD_LOCAL.connections = cache
-        conn = cache.get("write")
-        if conn is not None:
+        connection = cache.get("write")
+        if connection is not None:
             try:
-                conn.execute("SELECT 1")
-            except sqlite3.Error:
+                with connection.cursor() as cur:
+                    cur.execute("SELECT 1")
+            except Error:
                 try:
-                    conn.close()
-                except sqlite3.Error:
+                    connection.close()
+                except Error:
                     pass
-                conn = None
+                connection = None
                 cache.pop("write", None)
-        if conn is None:
-            conn = connect()
-            cache["write"] = conn
+        if connection is None:
+            connection = connect_pg(autocommit=False)
+            cache["write"] = connection
     else:
-        conn = connect()
+        connection = connect_pg(autocommit=True)
     try:
-        yield conn
-    finally:
-        if conn is not None:
+        yield connection
+        if write and connection is not None:
             try:
-                if conn.in_transaction:  # type: ignore[attr-defined]
-                    conn.rollback()
-            except sqlite3.Error:
+                connection.commit()
+            except Error:
+                connection.rollback()
+                raise
+    except Exception:
+        if write and connection is not None:
+            try:
+                connection.rollback()
+            except Error:
                 pass
-            if not write:
-                conn.close()
+        raise
+    finally:
+        if not write and connection is not None:
+            try:
+                connection.close()
+            except Error:
+                pass
 
 
 def close_cached_connections() -> None:
@@ -84,176 +111,135 @@ def close_cached_connections() -> None:
             continue
         try:
             conn.close()
-        except sqlite3.Error:
+        except Error:
             pass
     _THREAD_LOCAL.connections = {}
 
 
-SQL_WRITE_KEYWORDS = {
-    "INSERT",
-    "UPDATE",
-    "DELETE",
-    "REPLACE",
-    "CREATE",
-    "DROP",
-    "ALTER",
-    "PRAGMA",
-    "VACUUM",
-    "REINDEX",
-    "ATTACH",
-    "DETACH",
-    "ANALYZE",
-}
-
-
-def _sql_requires_lock(sql: str) -> bool:
-    stripped = sql.lstrip()
-    if not stripped:
-        return False
-    upper_sql = stripped.upper()
-    first_token = upper_sql.split(None, 1)[0]
-    if first_token == "SELECT":
-        return False
-    if first_token == "WITH":
-        return any(keyword in upper_sql for keyword in SQL_WRITE_KEYWORDS)
-    return True
-
-
 def retryable_execute(
-    target: sqlite3.Connection | sqlite3.Cursor,
+    target: Connection | Cursor,
     sql: str,
-    parameters=(),
+    parameters: Sequence | None = None,
     *,
-    use_file_lock: bool | None = None,
     retry_interval: float = 0.5,
 ):
-    #should_lock = _sql_requires_lock(sql) if use_file_lock is None else use_file_lock
-    #if should_lock:
-    #    with FileLock(LOCK_PATH):
-    #        return target.execute(sql, parameters)
+    if parameters is None:
+        parameters = ()
     while True:
         try:
             return target.execute(sql, parameters)
-        except sqlite3.OperationalError as exc:
-            message = str(exc).lower()
-            if "locked" in message or "busy" in message:
-                time.sleep(retry_interval)
-                continue
+        except _RETRYABLE_ERRORS:
+            time.sleep(retry_interval)
+            continue
+        except Error:
             raise
 
 
 def retryable_executemany(
-    target: sqlite3.Connection | sqlite3.Cursor,
+    target: Connection | Cursor,
     sql: str,
-    seq_of_parameters,
+    seq_of_parameters: Iterable[Sequence],
     *,
     retry_interval: float = 0.5,
 ):
     if not isinstance(seq_of_parameters, (list, tuple)):
         seq_of_parameters = list(seq_of_parameters)
-    connection = target if isinstance(target, sqlite3.Connection) else target.connection
+    connection = target if isinstance(target, Connection) else target.connection
     while True:
         try:
-            connection.execute("BEGIN IMMEDIATE")
-            break
-        except sqlite3.OperationalError as exc:
-            message = str(exc).lower()
-            if "locked" in message or "busy" in message:
-                time.sleep(retry_interval)
-                continue
+            with connection.transaction():
+                cursor = target if isinstance(target, Cursor) else connection.cursor()
+                result = cursor.executemany(sql, seq_of_parameters)
+            return result
+        except _RETRYABLE_ERRORS:
+            time.sleep(retry_interval)
+            continue
+        except Error:
             raise
 
+
+def ensure_schema(*, existing: Connection | None = None) -> None:
+    close_after = False
+    if existing is None:
+        existing = connect_pg(autocommit=False)
+        close_after = True
     try:
-        result = target.executemany(sql, seq_of_parameters)
-        connection.execute("COMMIT")
-        return result
-    except Exception:
-        try:
-            connection.execute("ROLLBACK")
-        except sqlite3.OperationalError:
-            pass
-        raise
-
-
-def ensure_schema(*, lock_acquired: bool = False) -> None:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    lock_ctx = nullcontext() if lock_acquired else FileLock(LOCK_PATH)
-    with lock_ctx:
-        with sqlite3.connect(DB_PATH, timeout=30, isolation_level=None) as conn:
-            conn.execute("PRAGMA busy_timeout = 5000")
-            conn.execute("PRAGMA journal_mode=WAL;")
-            conn.executescript(
+        with existing.cursor() as cur:
+            cur.execute(
                 """
-                DROP TABLE IF EXISTS hero_stats;
-                DROP TABLE IF EXISTS players;
-                DROP TABLE IF EXISTS meta;
-                DROP TABLE IF EXISTS best;
-
-                CREATE TABLE players (
-                    steamAccountId INTEGER PRIMARY KEY,
+                CREATE TABLE IF NOT EXISTS players (
+                    steamAccountId BIGINT PRIMARY KEY,
                     depth INTEGER,
                     assigned_to TEXT,
-                    assigned_at DATETIME,
-                    hero_refreshed_at DATETIME,
-                    hero_done INTEGER DEFAULT 0,
-                    discover_done INTEGER DEFAULT 0,
+                    assigned_at TIMESTAMPTZ,
+                    hero_refreshed_at TIMESTAMPTZ,
+                    hero_done BOOLEAN DEFAULT FALSE,
+                    discover_done BOOLEAN DEFAULT FALSE,
                     seen_count INTEGER NOT NULL DEFAULT 0
-                );
-
-                CREATE TABLE hero_stats (
-                    steamAccountId INTEGER,
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS hero_stats (
+                    steamAccountId BIGINT,
                     heroId INTEGER,
                     matches INTEGER,
                     wins INTEGER,
                     PRIMARY KEY (steamAccountId, heroId)
-                );
-
-                CREATE TABLE best (
-                    hero_id INTEGER PRIMARY KEY,
-                    hero_name TEXT,
-                    player_id INTEGER,
-                    matches INTEGER,
-                    wins INTEGER
-                );
-
-                CREATE TABLE meta (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
-
+                )
                 """
             )
-            conn.execute(
+            cur.execute(
                 """
-                INSERT OR IGNORE INTO players (steamAccountId, depth)
-                VALUES (?, 0)
+                CREATE TABLE IF NOT EXISTS best (
+                    hero_id INTEGER PRIMARY KEY,
+                    hero_name TEXT,
+                    player_id BIGINT,
+                    matches INTEGER,
+                    wins INTEGER
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+            cur.execute(
+                """
+                INSERT INTO players (steamAccountId, depth)
+                VALUES (%s, 0)
+                ON CONFLICT (steamAccountId) DO NOTHING
                 """,
                 (INITIAL_PLAYER_ID,),
             )
-        ensure_indexes(lock_acquired=True)
+    finally:
+        if close_after:
+            existing.commit()
+            existing.close()
 
 
-def ensure_indexes(*, lock_acquired: bool = False) -> None:
-    global _INDEXES_ENSURED
-    if _INDEXES_ENSURED:
-        return
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    lock_ctx = nullcontext() if lock_acquired else FileLock(LOCK_PATH)
-    with lock_ctx:
-        with sqlite3.connect(DB_PATH, timeout=30, isolation_level=None) as conn:
-            conn.execute("PRAGMA busy_timeout = 5000")
-            try:
-                conn.execute(
-                    "ALTER TABLE players ADD COLUMN seen_count INTEGER NOT NULL DEFAULT 0"
-                )
-            except sqlite3.OperationalError as exc:
-                message = str(exc).lower()
-                if "duplicate column name" not in message:
-                    raise
-            conn.execute(
+def ensure_indexes(*, existing: Connection | None = None) -> None:
+    close_after = False
+    if existing is None:
+        existing = connect_pg(autocommit=False)
+        close_after = True
+    try:
+        with existing.cursor() as cur:
+            cur.execute(
+                """
+                ALTER TABLE players
+                ADD COLUMN IF NOT EXISTS seen_count INTEGER NOT NULL DEFAULT 0
+                """
+            )
+            cur.execute(
                 "UPDATE players SET seen_count=0 WHERE seen_count IS NULL"
             )
-            conn.executescript(
+            cur.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_players_hero_queue
                     ON players (
@@ -261,14 +247,22 @@ def ensure_indexes(*, lock_acquired: bool = False) -> None:
                         assigned_to,
                         COALESCE(depth, 0),
                         steamAccountId
-                    );
+                    )
+                """
+            )
+            cur.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_players_hero_assignment_cursor
                     ON players (
                         hero_done,
                         assigned_to,
                         steamAccountId
                     )
-                    WHERE hero_done=0 AND assigned_to IS NULL;
+                    WHERE hero_done=FALSE AND assigned_to IS NULL
+                """
+            )
+            cur.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_players_hero_queue_seen
                     ON players (
                         hero_done,
@@ -276,32 +270,58 @@ def ensure_indexes(*, lock_acquired: bool = False) -> None:
                         seen_count DESC,
                         COALESCE(depth, 0),
                         steamAccountId
-                    );
+                    )
+                """
+            )
+            cur.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_players_hero_cursor
                     ON players (steamAccountId)
-                    WHERE hero_done=0 AND assigned_to IS NULL;
+                    WHERE hero_done=FALSE AND assigned_to IS NULL
+                """
+            )
+            cur.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_players_hero_pending
                     ON players (steamAccountId)
-                    WHERE hero_done=0;
+                    WHERE hero_done=FALSE
+                """
+            )
+            cur.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_players_hero_refresh
                     ON players (
                         hero_done,
                         assigned_to,
-                        COALESCE(hero_refreshed_at, '1970-01-01'),
+                        COALESCE(hero_refreshed_at, '1970-01-01'::timestamptz),
                         steamAccountId
-                    );
-                DROP INDEX IF EXISTS idx_players_hero_refresh_seen;
-                CREATE INDEX idx_players_hero_refresh_seen
+                    )
+                """
+            )
+            cur.execute(
+                "DROP INDEX IF EXISTS idx_players_hero_refresh_seen"
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_players_hero_refresh_seen
                     ON players (
                         hero_done,
                         assigned_to,
-                        COALESCE(hero_refreshed_at, '1970-01-01'),
+                        COALESCE(hero_refreshed_at, '1970-01-01'::timestamptz),
                         seen_count DESC,
                         steamAccountId
                     )
-                    WHERE hero_done=1 AND assigned_to IS NULL;
-                DROP INDEX IF EXISTS idx_players_discover_queue;
-                DROP INDEX IF EXISTS idx_players_discover_queue_seen;
+                    WHERE hero_done=TRUE AND assigned_to IS NULL
+                """
+            )
+            cur.execute(
+                "DROP INDEX IF EXISTS idx_players_discover_queue"
+            )
+            cur.execute(
+                "DROP INDEX IF EXISTS idx_players_discover_queue_seen"
+            )
+            cur.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_players_discover_assignment
                     ON players (
                         hero_done,
@@ -311,42 +331,201 @@ def ensure_indexes(*, lock_acquired: bool = False) -> None:
                         COALESCE(depth, 0),
                         steamAccountId
                     )
-                    WHERE hero_done=1
-                      AND discover_done=0
-                      AND (assigned_to IS NULL OR assigned_to='discover');
-                DROP INDEX IF EXISTS idx_players_assignment_state;
+                    WHERE hero_done=TRUE
+                      AND discover_done=FALSE
+                      AND (assigned_to IS NULL OR assigned_to='discover')
+                """
+            )
+            cur.execute(
+                "DROP INDEX IF EXISTS idx_players_assignment_state"
+            )
+            cur.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_players_assignment_state
                     ON players (
                         assigned_to,
                         assigned_at
                     )
-                    WHERE assigned_to IS NOT NULL;
+                    WHERE assigned_to IS NOT NULL
+                """
+            )
+            cur.execute(
+                """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_meta_key
-                    ON meta (key);
+                    ON meta (key)
+                """
+            )
+            cur.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_hero_stats_leaderboard
                     ON hero_stats (
                         heroId,
                         matches DESC,
                         wins DESC,
                         steamAccountId
-                    );
+                    )
+                """
+            )
+            cur.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_hero_stats_order
                     ON hero_stats (
                         matches DESC,
                         wins DESC,
                         steamAccountId ASC
-                    );
+                    )
                 """
             )
-    _INDEXES_ENSURED = True
+    finally:
+        if close_after:
+            existing.commit()
+            existing.close()
 
 
-def release_incomplete_assignments(max_age_minutes: int = 10, existing: sqlite3.Connection | None = None) -> int:
-    age_modifier = f"-{int(max_age_minutes)} minutes"
+def maybe_convert_sqlite(*, existing: Connection | None = None) -> None:
+    if not DB_PATH.exists():
+        return
+    close_after = False
     if existing is None:
-        with db_connection(write=True) as conn:
+        existing = connect_pg(autocommit=False)
+        close_after = True
+    with existing.cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS count FROM players")
+        row = cur.fetchone()
+        if row and row["count"]:
+            return
+    with sqlite3.connect(DB_PATH) as legacy_conn:
+        legacy_conn.row_factory = sqlite3.Row
+        legacy_cur = legacy_conn.cursor()
+        with existing.cursor() as cur:
+            legacy_cur.execute("SELECT * FROM players")
+            player_rows = legacy_cur.fetchall()
+            if player_rows:
+                retryable_executemany(
+                    cur,
+                    """
+                    INSERT INTO players (
+                        steamAccountId,
+                        depth,
+                        assigned_to,
+                        assigned_at,
+                        hero_refreshed_at,
+                        hero_done,
+                        discover_done,
+                        seen_count
+                    )
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (steamAccountId) DO UPDATE SET
+                        depth=EXCLUDED.depth,
+                        assigned_to=EXCLUDED.assigned_to,
+                        assigned_at=EXCLUDED.assigned_at,
+                        hero_refreshed_at=EXCLUDED.hero_refreshed_at,
+                        hero_done=EXCLUDED.hero_done,
+                        discover_done=EXCLUDED.discover_done,
+                        seen_count=EXCLUDED.seen_count
+                    """,
+                    [
+                        (
+                            row["steamAccountId"],
+                            row["depth"],
+                            row["assigned_to"],
+                            row["assigned_at"],
+                            row["hero_refreshed_at"],
+                            bool(row["hero_done"]),
+                            bool(row["discover_done"]),
+                            row["seen_count"],
+                        )
+                        for row in player_rows
+                    ],
+                )
+            legacy_cur.execute("SELECT * FROM hero_stats")
+            hero_rows = legacy_cur.fetchall()
+            if hero_rows:
+                retryable_executemany(
+                    cur,
+                    """
+                    INSERT INTO hero_stats (steamAccountId, heroId, matches, wins)
+                    VALUES (%s,%s,%s,%s)
+                    ON CONFLICT (steamAccountId, heroId) DO UPDATE SET
+                        matches=EXCLUDED.matches,
+                        wins=EXCLUDED.wins
+                    """,
+                    [
+                        (
+                            row["steamAccountId"],
+                            row["heroId"],
+                            row["matches"],
+                            row["wins"],
+                        )
+                        for row in hero_rows
+                    ],
+                )
+            legacy_cur.execute("SELECT * FROM best")
+            best_rows = legacy_cur.fetchall()
+            if best_rows:
+                retryable_executemany(
+                    cur,
+                    """
+                    INSERT INTO best (hero_id, hero_name, player_id, matches, wins)
+                    VALUES (%s,%s,%s,%s,%s)
+                    ON CONFLICT (hero_id) DO UPDATE SET
+                        hero_name=EXCLUDED.hero_name,
+                        player_id=EXCLUDED.player_id,
+                        matches=EXCLUDED.matches,
+                        wins=EXCLUDED.wins
+                    """,
+                    [
+                        (
+                            row["hero_id"],
+                            row["hero_name"],
+                            row["player_id"],
+                            row["matches"],
+                            row["wins"],
+                        )
+                        for row in best_rows
+                    ],
+                )
+            legacy_cur.execute("SELECT * FROM meta")
+            meta_rows = legacy_cur.fetchall()
+            if meta_rows:
+                retryable_executemany(
+                    cur,
+                    """
+                    INSERT INTO meta (key, value)
+                    VALUES (%s,%s)
+                    ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value
+                    """,
+                    [
+                        (
+                            row["key"],
+                            row["value"],
+                        )
+                        for row in meta_rows
+                    ],
+                )
+    if close_after:
+        existing.commit()
+        existing.close()
+    backup_path = DB_PATH.with_suffix(".converted")
+    try:
+        DB_PATH.rename(backup_path)
+    except OSError:
+        pass
+
+
+def release_incomplete_assignments(
+    max_age_minutes: int = 10,
+    existing: Connection | None = None,
+) -> int:
+    age_interval = f"{int(max_age_minutes)} minutes"
+    close_after = False
+    if existing is None:
+        existing = connect_pg(autocommit=False)
+        close_after = True
+    try:
+        with existing.cursor() as cur:
             cursor = retryable_execute(
-                conn,
+                cur,
                 """
                 UPDATE players
                 SET assigned_to=NULL,
@@ -354,40 +533,30 @@ def release_incomplete_assignments(max_age_minutes: int = 10, existing: sqlite3.
                 WHERE assigned_to IS NOT NULL
                   AND (
                       assigned_at IS NULL
-                      OR assigned_at <= datetime('now', ?)
+                      OR assigned_at <= NOW() - (%s)::interval
                   )
                 """,
-                (age_modifier,),
+                (age_interval,),
             )
             return cursor.rowcount if cursor.rowcount is not None else 0
-    cursor = retryable_execute(
-        existing,
-        """
-        UPDATE players
-        SET assigned_to=NULL,
-            assigned_at=NULL
-        WHERE assigned_to IS NOT NULL
-          AND (
-              assigned_at IS NULL
-              OR assigned_at <= datetime('now', ?)
-          )
-        """,
-        (age_modifier,),
-    )
-    return cursor.rowcount if cursor.rowcount is not None else 0
+    finally:
+        if close_after:
+            existing.commit()
+            existing.close()
 
 
 __all__ = [
-    "connect",
+    "connect_pg",
     "db_connection",
     "close_cached_connections",
     "ensure_schema_exists",
     "ensure_schema",
     "ensure_indexes",
+    "maybe_convert_sqlite",
     "release_incomplete_assignments",
     "retryable_execute",
     "retryable_executemany",
     "DB_PATH",
-    "LOCK_PATH",
     "INITIAL_PLAYER_ID",
+    "DATABASE_URL",
 ]

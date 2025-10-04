@@ -12,19 +12,19 @@ __all__ = ["reset_player_task"]
 
 def _reset_hero_task(cur, steam_account_id: int) -> int:
     has_existing_stats = cur.execute(
-        "SELECT 1 FROM hero_stats WHERE steamAccountId=? LIMIT 1",
+        "SELECT 1 FROM hero_stats WHERE steamAccountId=%s LIMIT 1",
         (steam_account_id,),
     ).fetchone()
-    hero_done_value = 1 if has_existing_stats else 0
+    hero_done_value = bool(has_existing_stats)
     update_cursor = retryable_execute(
         cur,
         """
         UPDATE players
-        SET hero_done=?,
-            hero_refreshed_at=CASE WHEN ? THEN hero_refreshed_at ELSE NULL END,
+        SET hero_done=%s,
+            hero_refreshed_at=CASE WHEN %s THEN hero_refreshed_at ELSE NULL END,
             assigned_to=NULL,
             assigned_at=NULL
-        WHERE steamAccountId=?
+        WHERE steamAccountId=%s
         """,
         (hero_done_value, hero_done_value, steam_account_id),
     )
@@ -34,7 +34,7 @@ def _reset_hero_task(cur, steam_account_id: int) -> int:
             cur,
             """
             INSERT INTO meta (key, value)
-            VALUES (?, '-1')
+            VALUES (%s, '-1')
             ON CONFLICT(key) DO UPDATE SET value='-1'
             """,
             (HERO_ASSIGNMENT_CURSOR_KEY, ),
@@ -47,10 +47,10 @@ def _reset_discover_task(cur, steam_account_id: int) -> int:
         cur,
         """
         UPDATE players
-        SET discover_done=0,
+        SET discover_done=FALSE,
             assigned_to=NULL,
             assigned_at=NULL
-        WHERE steamAccountId=?
+        WHERE steamAccountId=%s
         """,
         (steam_account_id,),
     )
@@ -64,7 +64,7 @@ def _reset_generic_task(cur, steam_account_id: int) -> int:
         UPDATE players
         SET assigned_to=NULL,
             assigned_at=NULL
-        WHERE steamAccountId=?
+        WHERE steamAccountId=%s
         """,
         (steam_account_id,),
     )
