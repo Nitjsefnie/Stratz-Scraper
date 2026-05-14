@@ -65,9 +65,8 @@ def record_progress_snapshot(
     Parameters
     ----------
     progress:
-        Optional mapping containing ``players_total``, ``hero_done`` and
-        ``discover_done`` counters. When omitted the values are pulled from the
-        live ``/progress`` view.
+        Optional mapping containing ``players_total`` and ``scraped`` counters.
+        When omitted the values are pulled from the live ``/progress`` view.
     captured_at:
         Optional timestamp indicating when the snapshot was captured. The value
         is normalized to the start of the five-minute interval in UTC to keep a
