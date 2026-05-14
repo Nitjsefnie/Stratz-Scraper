@@ -293,11 +293,8 @@ def ensure_schema(*, existing: Connection | None = None) -> None:
                     depth INTEGER NOT NULL,
                     assigned_to TEXT,
                     assigned_at TIMESTAMPTZ,
-                    hero_refreshed_at TIMESTAMPTZ,
-                    hero_done BOOLEAN DEFAULT FALSE,
-                    highest_match_id BIGINT,
-                    discover_done BOOLEAN DEFAULT FALSE,
-                    full_write_done BOOLEAN DEFAULT FALSE
+                    scraped_at TIMESTAMPTZ,
+                    latest_match_id BIGINT
                 )
                 """
             )
@@ -336,8 +333,7 @@ def ensure_schema(*, existing: Connection | None = None) -> None:
                 CREATE TABLE IF NOT EXISTS progress_snapshots (
                     captured_at TIMESTAMPTZ PRIMARY KEY,
                     players_total BIGINT NOT NULL,
-                    hero_done BIGINT NOT NULL,
-                    discover_done BIGINT NOT NULL
+                    scraped BIGINT NOT NULL
                 )
                 """
             )
@@ -348,12 +344,6 @@ def ensure_schema(*, existing: Connection | None = None) -> None:
                 ON CONFLICT (steamAccountId) DO NOTHING
                 """,
                 (INITIAL_PLAYER_ID,),
-            )
-            cur.execute(
-                """
-                DELETE FROM meta
-                WHERE key IN ('hero_assignment_cursor', 'task_assignment_counter')
-                """
             )
     finally:
         if close_after:
@@ -368,77 +358,27 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
         close_after = True
     try:
         with existing.cursor() as cur:
-            # Retire obsolete indexes before creating the current set. This keeps the
-            # schema lean without leaving behind redundant definitions.
             cur.execute(
                 """
-                -- stratz_scraper.web.assignment hero assignment lookups
-                CREATE INDEX IF NOT EXISTS idx_players_hero_unassigned_queue
-                    ON players (steamAccountId)
-                    WHERE hero_done=FALSE AND assigned_to IS NULL
+                CREATE INDEX IF NOT EXISTS idx_players_scrape_queue
+                    ON players (depth ASC, steamAccountId ASC)
+                    WHERE scraped_at IS NULL AND assigned_to IS NULL
                 """
             )
             cur.execute(
                 """
-                -- stratz_scraper.web.assignment._assign_discovery
-                CREATE INDEX IF NOT EXISTS idx_players_discover_queue
-                    ON players (
-                        depth ASC,
-                        steamAccountId ASC
-                    )
-                    WHERE hero_done=TRUE
-                      AND discover_done=FALSE
-                      AND assigned_to IS NULL
-                """
-            )
-            cur.execute(
-                "DROP INDEX IF EXISTS idx_players_hero_refresh_queue"
-            )
-            cur.execute(
-                """
-                -- stratz_scraper.web.assignment.assign_next_task refresh scheduling
-                CREATE INDEX IF NOT EXISTS idx_players_refresh_queue
-                    ON players (
-                        hero_refreshed_at ASC NULLS FIRST,
-                        steamAccountId ASC
-                    )
-                    WHERE hero_done=TRUE
-                      AND discover_done=TRUE
-                      AND assigned_to IS NULL
+                CREATE INDEX IF NOT EXISTS idx_players_rescrape_queue
+                    ON players (scraped_at ASC, steamAccountId ASC)
+                    WHERE scraped_at IS NOT NULL AND assigned_to IS NULL
                 """
             )
             cur.execute(
                 """
-                -- stratz_scraper.web.progress.fetch_progress
-                CREATE INDEX IF NOT EXISTS idx_players_hero_completed
-                    ON players (steamAccountId)
-                    WHERE hero_done=TRUE
-                """
-            )
-            cur.execute(
-                """
-                -- stratz_scraper.web.assignment._discovery_backlog_exceeded
-                CREATE INDEX IF NOT EXISTS idx_players_discover_fullwrite_backlog
-                    ON players (steamAccountId)
-                    WHERE discover_done=TRUE
-                      AND full_write_done=FALSE
-                      AND highest_match_id IS NOT NULL
-                """
-            )
-            cur.execute(
-                """
-                -- stratz_scraper.database.release_incomplete_assignments
                 CREATE INDEX IF NOT EXISTS idx_players_assignment_state
-                    ON players (
-                        assigned_to,
-                        assigned_at
-                    )
+                    ON players (assigned_to, assigned_at)
                     WHERE assigned_to IS NOT NULL
                 """
             )
-            # ``hero_top100`` tops out at roughly 20k rows (100 players per hero)
-            # so dedicated indexes are unnecessary. Sequential scans remain cheap
-            # while keeping rebuilds simple.
     finally:
         if close_after:
             existing.commit()
