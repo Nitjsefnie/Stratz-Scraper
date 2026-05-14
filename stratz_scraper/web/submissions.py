@@ -188,16 +188,8 @@ def process_hero_submission(
                 INSERT INTO hero_stats (steamAccountId, heroId, matches, wins)
                 VALUES (%s,%s,%s,%s)
                 ON CONFLICT(steamAccountId, heroId) DO UPDATE SET
-                    matches = CASE
-                        WHEN excluded.matches > hero_stats.matches
-                        THEN excluded.matches
-                        ELSE hero_stats.matches
-                    END,
-                    wins = CASE
-                        WHEN excluded.matches > hero_stats.matches
-                        THEN excluded.wins
-                        ELSE hero_stats.wins
-                    END
+                    matches = excluded.matches,
+                    wins = excluded.wins
                 """,
                 hero_stats_rows,
             )
