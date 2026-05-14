@@ -23,6 +23,7 @@ from .leaderboard import (
     fetch_hero_leaderboard,
     fetch_overall_leaderboard,
 )
+from .leaderboard_refresh import ensure_leaderboard_refresher
 from .progress import (
     ensure_progress_snapshotter,
     fetch_progress,
@@ -46,6 +47,7 @@ def create_app() -> Flask:
     release_incomplete_assignments()
     ensure_assignment_cleanup_scheduler()
     ensure_progress_snapshotter()
+    ensure_leaderboard_refresher()
 
     @app.teardown_appcontext
     def _teardown_connections(exception: object | None) -> None:
