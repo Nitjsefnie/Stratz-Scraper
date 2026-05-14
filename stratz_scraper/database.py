@@ -453,6 +453,38 @@ def refresh_leaderboard_views() -> None:
                 WHERE ranked.rn <= 100
                 """,
             )
+            # Prune hero_stats: keep top-1000-per-hero ∪ everyone with
+            # matches >= 1000. The first set bounds leaderboard depth;
+            # the second is a small historical safety net for players
+            # who fall out of a hero's top-1000 but still have notable
+            # totals. Caps hero_stats at ~155 heroes * 1000 rows ≈ 14 MB
+            # regardless of how many accounts we scrape.
+            retryable_execute(
+                cur,
+                """
+                WITH keep AS (
+                    SELECT heroId, steamAccountId FROM (
+                        SELECT heroId, steamAccountId,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY heroId
+                                   ORDER BY matches DESC, wins DESC, steamAccountId
+                               ) AS rn
+                        FROM public.hero_stats
+                    ) ranked
+                    WHERE rn <= 1000
+                    UNION
+                    SELECT heroId, steamAccountId
+                    FROM public.hero_stats
+                    WHERE matches >= 1000
+                )
+                DELETE FROM public.hero_stats hs
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM keep k
+                    WHERE k.heroId = hs.heroId
+                      AND k.steamAccountId = hs.steamAccountId
+                )
+                """,
+            )
         connection.commit()
     finally:
         if connection is not None:
