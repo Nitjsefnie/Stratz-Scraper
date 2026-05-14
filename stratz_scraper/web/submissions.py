@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from typing import Iterable, Iterator, List
+from typing import Iterable, List
+
+from psycopg import errors
 
 from ..database import (
     close_cached_connections,
@@ -16,7 +17,14 @@ from ..database import (
 
 BACKGROUND_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 _DISCOVERY_SUBMISSION_LOCK_ID = int.from_bytes(b"discover", "big")
-_DISCOVERY_BATCH_SIZE = 50
+
+_RETRYABLE_ERRORS = (
+    errors.DeadlockDetected,
+    errors.SerializationFailure,
+    errors.LockNotAvailable,
+)
+
+import time
 
 __all__ = [
     "BACKGROUND_EXECUTOR",
@@ -117,10 +125,10 @@ def _iter_consuming_values(values: Iterable[object]) -> Iterator[object]:
 
 def _iter_discovered_candidate_ids(
     values: Iterable[object] | None,
-) -> Iterator[int]:
+) -> Iterable[int]:
     if values is None:
         return
-    for value in _iter_consuming_values(values):
+    for value in values:
         candidate_id: object | None
         if isinstance(value, dict):
             candidate_id = value.get("steamAccountId")
@@ -135,39 +143,6 @@ def _iter_discovered_candidate_ids(
         if normalized_id <= 0:
             continue
         yield normalized_id
-
-
-def _iter_discovered_child_rows(
-    discovered_payload: Iterable[object] | None,
-    *,
-    parent_id: int,
-    next_depth: int,
-    batch_size: int,
-) -> Iterator[List[tuple[int, int]]]:
-    effective_batch_size = max(1, batch_size)
-    pending: OrderedDict[int, None] = OrderedDict()
-
-    def _drain_pending(limit: int | None) -> List[tuple[int, int]]:
-        batch: List[tuple[int, int]] = []
-        while pending and (limit is None or len(batch) < limit):
-            candidate, _ = pending.popitem(last=False)
-            batch.append((candidate, next_depth))
-        return batch
-
-    for candidate_id in _iter_discovered_candidate_ids(discovered_payload):
-        if candidate_id == parent_id:
-            continue
-        if candidate_id in pending:
-            continue
-        pending[candidate_id] = None
-        if len(pending) >= effective_batch_size:
-            batch = _drain_pending(effective_batch_size)
-            if batch:
-                yield batch
-    if pending:
-        batch = _drain_pending(None)
-        if batch:
-            yield batch
 
 
 def _resolve_next_depth(
@@ -236,6 +211,59 @@ def process_hero_submission(
         _unmark_hero_task(steam_account_id)
 
 
+def _copy_discovered_rows(
+    conn,
+    steam_account_ids: list[int],
+    next_depth: int,
+) -> None:
+    """Bulk-insert discovered children using COPY + a temp table upsert."""
+
+    while True:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TEMP TABLE discovered_tmp (
+                        steamAccountId BIGINT NOT NULL,
+                        depth INTEGER NOT NULL
+                    ) ON COMMIT DROP
+                    """
+                )
+                with cur.copy(
+                    "COPY discovered_tmp (steamAccountId, depth) FROM STDIN"
+                ) as copy:
+                    for sid in steam_account_ids:
+                        copy.write_row((sid, next_depth))
+                cur.execute(
+                    """
+                    INSERT INTO players (
+                        steamAccountId, depth, hero_done, discover_done
+                    )
+                    SELECT steamAccountId, depth, FALSE, FALSE
+                    FROM discovered_tmp
+                    ON CONFLICT (steamAccountId) DO UPDATE
+                    SET depth = excluded.depth,
+                        highest_match_id = NULL,
+                        discover_done = FALSE
+                    WHERE excluded.depth < players.depth
+                    """
+                )
+            conn.commit()
+            return
+        except _RETRYABLE_ERRORS:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            # Reacquire advisory lock to match prior retry semantic.
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT pg_advisory_xact_lock(%s)",
+                    (_DISCOVERY_SUBMISSION_LOCK_ID,),
+                )
+            time.sleep(0.5)
+
+
 def process_discover_submission(
     steam_account_id: int,
     discovered_payload: Iterable[object] | None,
@@ -251,33 +279,19 @@ def process_discover_submission(
         parsed_depth,
         parsed_assignment_depth,
     )
+
+    deduped: list[int] = []
+    seen: set[int] = set()
+    for candidate_id in _iter_discovered_candidate_ids(discovered_payload):
+        if candidate_id == steam_account_id or candidate_id in seen:
+            continue
+        seen.add(candidate_id)
+        deduped.append(candidate_id)
+
     try:
         with db_connection(write=True) as conn:
-            for child_rows in _iter_discovered_child_rows(
-                discovered_payload,
-                parent_id=steam_account_id,
-                next_depth=next_depth_value,
-                batch_size=_DISCOVERY_BATCH_SIZE,
-            ):
-                retryable_executemany(
-                    conn,
-                    """
-                    INSERT INTO players (
-                        steamAccountId,
-                        depth,
-                        hero_done,
-                        discover_done
-                    )
-                    VALUES (%s, %s, FALSE, FALSE)
-                    ON CONFLICT (steamAccountId) DO UPDATE
-                    SET
-                        depth = excluded.depth, highest_match_id = NULL, discover_done = FALSE
-                    WHERE excluded.depth < players.depth
-                    """,
-                    child_rows,
-                    reacquire_advisory_lock=_DISCOVERY_SUBMISSION_LOCK_ID,
-                )
-                conn.commit()
+            if deduped:
+                _copy_discovered_rows(conn, deduped, next_depth_value)
             with conn.cursor() as cur:
                 retryable_execute(
                     cur,
@@ -293,12 +307,11 @@ def process_discover_submission(
                     """
                     UPDATE meta
                     SET value = '-1'
-                    WHERE key = 'hero_assignment_cursor';
-                    """
+                    WHERE key = 'hero_assignment_cursor'
+                    """,
                 )
     except Exception:
         import traceback
-
         print(
             f"[submit-background] failed to process discovery for {steam_account_id}",
             flush=True,
