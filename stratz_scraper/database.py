@@ -445,12 +445,8 @@ def ensure_indexes(*, existing: Connection | None = None) -> None:
             existing.close()
 
 
-def refresh_leaderboard_views(*, concurrently: bool = True) -> None:
+def refresh_leaderboard_views() -> None:
     """Rebuild the cached hero leaderboard table."""
-
-    # ``concurrently`` is kept for API compatibility. The rebuild always runs in
-    # a single transaction so the flag is ignored.
-    del concurrently
 
     connection: Connection | None = None
     try:
