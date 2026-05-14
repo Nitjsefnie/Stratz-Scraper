@@ -31,20 +31,17 @@ def fetch_progress() -> dict:
             """
             SELECT
                 COUNT(*) AS total,
-                COUNT(*) FILTER (WHERE hero_done=TRUE) AS hero_done,
-                COUNT(*) FILTER (WHERE discover_done=TRUE) AS discover_done
+                COUNT(*) FILTER (WHERE scraped_at IS NOT NULL) AS scraped
             FROM players
             """
         ).fetchone()
         if row is None:
-            return {"players_total": 0, "hero_done": 0, "discover_done": 0}
+            return {"players_total": 0, "scraped": 0}
         total = row["total"] or 0
-        hero_done = row["hero_done"] or 0
-        discover_done = row["discover_done"] or 0
+        scraped = row["scraped"] or 0
     return {
         "players_total": total,
-        "hero_done": hero_done,
-        "discover_done": discover_done,
+        "scraped": scraped,
     }
 
 
@@ -82,7 +79,7 @@ def record_progress_snapshot(
         progress = fetch_progress()
     else:
         progress = dict(progress)
-    required_keys = ("players_total", "hero_done", "discover_done")
+    required_keys = ("players_total", "scraped")
     normalized: dict[str, int] = {}
     for key in required_keys:
         value = int(progress.get(key, 0))
@@ -96,21 +93,18 @@ def record_progress_snapshot(
             INSERT INTO progress_snapshots (
                 captured_at,
                 players_total,
-                hero_done,
-                discover_done
+                scraped
             )
-            VALUES (%s, %s, %s, %s)
+            VALUES (%s, %s, %s)
             ON CONFLICT (captured_at) DO UPDATE
             SET
                 players_total=EXCLUDED.players_total,
-                hero_done=EXCLUDED.hero_done,
-                discover_done=EXCLUDED.discover_done
+                scraped=EXCLUDED.scraped
             """,
             (
                 captured_at,
                 normalized["players_total"],
-                normalized["hero_done"],
-                normalized["discover_done"],
+                normalized["scraped"],
             ),
         )
 
@@ -182,7 +176,7 @@ def list_progress_snapshots(
 
     sql = (
         """
-        SELECT captured_at, players_total, hero_done, discover_done
+        SELECT captured_at, players_total, scraped
         FROM progress_snapshots
         """
         + where_sql
@@ -196,8 +190,7 @@ def list_progress_snapshots(
         {
             "captured_at": row["captured_at"],
             "players_total": row["players_total"],
-            "hero_done": row["hero_done"],
-            "discover_done": row["discover_done"],
+            "scraped": row["scraped"],
         }
         for row in rows
     ]
