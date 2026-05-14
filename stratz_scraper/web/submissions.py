@@ -201,169 +201,33 @@ def process_hero_submission(
     steam_account_id: int,
     heroes_payload: Iterable[dict] | None,
 ) -> None:
-    hero_stats_rows, hero_ids = _extract_hero_rows(steam_account_id, heroes_payload)
+    hero_stats_rows, _hero_ids = _extract_hero_rows(steam_account_id, heroes_payload)
+    if not hero_stats_rows:
+        return
     try:
         with db_connection(write=True) as conn:
             cur = conn.cursor()
-            if hero_stats_rows:
-                retryable_executemany(
-                    cur,
-                    """
-                    INSERT INTO hero_stats (steamAccountId, heroId, matches, wins)
-                    VALUES (%s,%s,%s,%s)
-                    ON CONFLICT(steamAccountId, heroId) DO UPDATE SET
-                        matches = CASE
-                            WHEN excluded.matches > hero_stats.matches
-                            THEN excluded.matches
-                            ELSE hero_stats.matches
-                        END,
-                        wins = CASE
-                            WHEN excluded.matches > hero_stats.matches
-                            THEN excluded.wins
-                            ELSE hero_stats.wins
-                        END
-                    """,
-                    hero_stats_rows,
-                )
-            if hero_ids:
-                stats_rows = retryable_execute(
-                    cur,
-                    """
-                    SELECT heroId, matches, wins
-                    FROM hero_stats
-                    WHERE steamAccountId=%s AND heroId = ANY(%s)
-                    """,
-                    (steam_account_id, list(hero_ids)),
-                ).fetchall()
-                stats_by_hero = {
-                    int(row_value(row, "heroId")): (
-                        int(row_value(row, "matches") or 0),
-                        int(row_value(row, "wins") or 0),
-                    )
-                    for row in stats_rows
-                }
-                if not stats_by_hero:
-                    return
-                hero_keys = list(stats_by_hero.keys())
-                existing_rows = retryable_execute(
-                    cur,
-                    """
-                    SELECT heroId, matches, wins
-                    FROM hero_top100
-                    WHERE steamAccountId=%s AND heroId = ANY(%s)
-                    """,
-                    (steam_account_id, hero_keys),
-                ).fetchall()
-                existing_by_hero = {
-                    int(row_value(row, "heroId")): (
-                        int(row_value(row, "matches") or 0),
-                        int(row_value(row, "wins") or 0),
-                    )
-                    for row in existing_rows
-                }
-                count_rows = retryable_execute(
-                    cur,
-                    """
-                    SELECT heroId, COUNT(*) AS total
-                    FROM hero_top100
-                    WHERE heroId = ANY(%s)
-                    GROUP BY heroId
-                    """,
-                    (hero_keys,),
-                ).fetchall()
-                counts_by_hero = {
-                    int(row_value(row, "heroId")): int(row_value(row, "total") or 0)
-                    for row in count_rows
-                }
-                threshold_rows = retryable_execute(
-                    cur,
-                    """
-                    SELECT heroId, steamAccountId, matches, wins
-                    FROM (
-                        SELECT
-                            heroId,
-                            steamAccountId,
-                            matches,
-                            wins,
-                            ROW_NUMBER() OVER (
-                                PARTITION BY heroId
-                                ORDER BY matches DESC, wins DESC, steamAccountId ASC
-                            ) AS rn
-                        FROM hero_top100
-                        WHERE heroId = ANY(%s)
-                    ) ranked
-                    WHERE rn = 100
-                    """,
-                    (hero_keys,),
-                ).fetchall()
-                thresholds_by_hero = {
-                    int(row_value(row, "heroId")): (
-                        int(row_value(row, "steamAccountId")),
-                        int(row_value(row, "matches") or 0),
-                        int(row_value(row, "wins") or 0),
-                    )
-                    for row in threshold_rows
-                }
-                for hero_id, stats in stats_by_hero.items():
-                    matches, wins = stats
-                    existing_stats = existing_by_hero.get(hero_id)
-                    if existing_stats is not None:
-                        existing_matches, existing_wins = existing_stats
-                        if existing_matches != matches or existing_wins != wins:
-                            retryable_execute(
-                                cur,
-                                """
-                                UPDATE hero_top100
-                                SET matches=%s, wins=%s
-                                WHERE heroId=%s AND steamAccountId=%s
-                                """,
-                                (matches, wins, hero_id, steam_account_id),
-                            )
-                        continue
-                    hero_count = counts_by_hero.get(hero_id, 0)
-                    if hero_count < 100:
-                        retryable_execute(
-                            cur,
-                            """
-                            INSERT INTO hero_top100 (heroId, steamAccountId, matches, wins)
-                            VALUES (%s,%s,%s,%s)
-                            """,
-                            (hero_id, steam_account_id, matches, wins),
-                        )
-                        continue
-                    threshold_row = thresholds_by_hero.get(hero_id)
-                    if threshold_row is None:
-                        continue
-                    threshold_account, threshold_matches, threshold_wins = threshold_row
-                    if matches < threshold_matches:
-                        continue
-                    if matches == threshold_matches and wins <= threshold_wins:
-                        continue
-                    retryable_execute(
-                        cur,
-                        """
-                        INSERT INTO hero_top100 (heroId, steamAccountId, matches, wins)
-                        VALUES (%s,%s,%s,%s)
-                        """,
-                        (hero_id, steam_account_id, matches, wins),
-                    )
-                    retryable_execute(
-                        cur,
-                        """
-                        DELETE FROM hero_top100
-                        WHERE ctid = (
-                            SELECT ctid
-                            FROM hero_top100
-                            WHERE heroId=%s
-                            ORDER BY matches ASC, wins ASC, steamAccountId DESC
-                            LIMIT 1
-                        )
-                        """,
-                        (hero_id,),
-                    )
+            retryable_executemany(
+                cur,
+                """
+                INSERT INTO hero_stats (steamAccountId, heroId, matches, wins)
+                VALUES (%s,%s,%s,%s)
+                ON CONFLICT(steamAccountId, heroId) DO UPDATE SET
+                    matches = CASE
+                        WHEN excluded.matches > hero_stats.matches
+                        THEN excluded.matches
+                        ELSE hero_stats.matches
+                    END,
+                    wins = CASE
+                        WHEN excluded.matches > hero_stats.matches
+                        THEN excluded.wins
+                        ELSE hero_stats.wins
+                    END
+                """,
+                hero_stats_rows,
+            )
     except Exception:
         import traceback
-
         print(
             f"[submit-background] failed to process hero stats for {steam_account_id}",
             flush=True,
