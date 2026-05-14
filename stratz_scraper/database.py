@@ -39,6 +39,7 @@ _RETRYABLE_ERRORS: tuple[type[BaseException], ...] = (
     errors.DeadlockDetected,
     errors.SerializationFailure,
     errors.LockNotAvailable,
+    errors.OperationalError,
 )
 
 
@@ -115,17 +116,6 @@ def db_connection(*, write: bool = False) -> Iterable[Connection]:
                 cache = {}
                 _THREAD_LOCAL.connections = cache
             connection = cache.get("write")
-            if connection is not None:
-                try:
-                    with connection.cursor() as cur:
-                        cur.execute("SELECT 1")
-                except Error:
-                    try:
-                        connection.close()
-                    except Error:
-                        pass
-                    connection = None
-                    cache.pop("write", None)
             if connection is None:
                 connection = connect_pg(autocommit=False)
                 cache["write"] = connection
@@ -184,6 +174,18 @@ def retryable_execute(
     while True:
         try:
             return target.execute(sql, parameters)
+        except errors.OperationalError as e:
+            print(e)
+            cache = getattr(_THREAD_LOCAL, "connections", None)
+            if cache:
+                conn_to_close = cache.pop("write", None)
+                if conn_to_close is not None:
+                    try:
+                        conn_to_close.close()
+                    except Error:
+                        pass
+            time.sleep(retry_interval)
+            raise
         except _RETRYABLE_ERRORS as e:
             print(e)
             time.sleep(retry_interval)
