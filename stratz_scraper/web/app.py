@@ -31,7 +31,7 @@ from .progress import (
 )
 from .request_utils import is_local_request
 from .seed import seed_players
-from .submissions import submit_discover_submission, submit_hero_submission
+from .submissions import submit_scrape_submission
 from .tasks import reset_player_task
 
 __all__ = ["create_app"]
@@ -99,201 +99,94 @@ def create_app() -> Flask:
 
     @app.post("/submit")
     def submit():
-        data = request.get_json(force=True)
+        data = request.get_json(force=True) or {}
         task_type = data.get("type")
         request_new_task = data.get("task") is True
-        if task_type == "fetch_hero_stats":
-            players_payload = []
-            raw_players = data.get("players")
-            if isinstance(raw_players, list):
-                seen: set[int] = set()
-                for entry in raw_players:
-                    if not isinstance(entry, dict):
-                        continue
-                    try:
-                        steam_account_id = int(entry["steamAccountId"])
-                    except (KeyError, TypeError, ValueError):
-                        continue
-                    if steam_account_id <= 0 or steam_account_id in seen:
-                        continue
-                    heroes_payload = entry.get("heroes", [])
-                    players_payload.append((steam_account_id, heroes_payload))
-                    seen.add(steam_account_id)
-            if not players_payload:
+
+        if task_type != "scrape_player":
+            return jsonify({"status": "error", "message": "Unknown submit type"}), 400
+
+        try:
+            steam_account_id = int(data["steamAccountId"])
+        except (KeyError, TypeError, ValueError):
+            return jsonify({"status": "error", "message": "steamAccountId is required"}), 400
+        if steam_account_id <= 0:
+            return jsonify({"status": "error", "message": "steamAccountId must be positive"}), 400
+
+        heroes_payload = data.get("heroes") or []
+        if not isinstance(heroes_payload, list):
+            heroes_payload = []
+
+        # Normalise discovered IDs (accepts either ints or {steamAccountId} dicts).
+        raw_discovered = data.get("discovered") or []
+        discovered_ids: list[int] = []
+        seen: set[int] = set()
+        if isinstance(raw_discovered, list):
+            for entry in raw_discovered:
+                candidate = entry.get("steamAccountId") if isinstance(entry, dict) else entry
                 try:
-                    steam_account_id = int(data["steamAccountId"])
-                except (KeyError, TypeError, ValueError):
-                    return (
-                        jsonify({"status": "error", "message": "steamAccountId is required"}),
-                        400,
-                    )
-                if steam_account_id <= 0:
-                    return (
-                        jsonify({"status": "error", "message": "steamAccountId must be positive"}),
-                        400,
-                    )
-                heroes_payload = data.get("heroes", [])
-                players_payload.append((steam_account_id, heroes_payload))
-            next_task = None
-            successful_payloads: list[tuple[int, object]] = []
-            try:
-                with db_connection(write=True) as conn:
-                    cur = conn.cursor()
-                    for steam_account_id, heroes_payload in players_payload:
-                        update_cursor = retryable_execute(
-                            cur,
-                            """
-                            UPDATE players
-                            SET hero_done=TRUE,
-                                assigned_to=NULL,
-                                assigned_at=NULL,
-                                hero_refreshed_at=CURRENT_TIMESTAMP
-                            WHERE steamAccountId=%s
-                            """,
-                            (steam_account_id,),
-                            retry_interval=ASSIGNMENT_RETRY_INTERVAL,
-                        )
-                        updated_rows = (
-                            update_cursor.rowcount
-                            if update_cursor.rowcount is not None
-                            else 0
-                        )
-                        if updated_rows == 0:
-                            raise LookupError
-                        successful_payloads.append((steam_account_id, heroes_payload))
-                    if request_new_task:
-                        next_task = assign_next_task(connection=conn)
-            except LookupError:
-                return (
-                    jsonify({"status": "error", "message": "Player not found"}),
-                    404,
-                )
-            for steam_account_id, heroes_payload in successful_payloads:
-                submit_hero_submission(
-                    steam_account_id,
-                    heroes_payload,
-                )
-            response_payload = {"status": "ok"}
-            if request_new_task:
-                response_payload["task"] = next_task
-            return jsonify(response_payload)
-        if task_type == "discover_matches":
-            try:
-                steam_account_id = int(data["steamAccountId"])
-            except (KeyError, TypeError, ValueError):
-                return jsonify({"status": "error", "message": "steamAccountId is required"}), 400
-            provided_next_depth = None
+                    cid = int(candidate) if candidate is not None else None
+                except (TypeError, ValueError):
+                    continue
+                if cid is None or cid <= 0 or cid == steam_account_id or cid in seen:
+                    continue
+                seen.add(cid)
+                discovered_ids.append(cid)
+
+        # Normalise latest_match_id.
+        latest_match_id_raw = data.get("latestMatchId")
+        try:
+            latest_match_id = int(latest_match_id_raw) if latest_match_id_raw is not None else None
+        except (TypeError, ValueError):
+            latest_match_id = None
+        if latest_match_id is not None and latest_match_id < 0:
+            latest_match_id = None
+
+        # Normalise depth (optional client-supplied; falls back to DB row's depth).
+        depth_raw = data.get("depth")
+        try:
+            provided_depth = int(depth_raw) if depth_raw is not None else None
+        except (TypeError, ValueError):
             provided_depth = None
-            next_depth_raw = data.get("nextDepth")
-            if next_depth_raw is not None:
-                try:
-                    provided_next_depth = int(next_depth_raw)
-                except (TypeError, ValueError):
-                    provided_next_depth = None
-            depth_raw = data.get("depth")
-            if depth_raw is not None:
-                try:
-                    provided_depth = int(depth_raw)
-                except (TypeError, ValueError):
-                    provided_depth = None
-            highest_match_id_raw = data.get("highestMatchId")
-            highest_match_id: int | None
-            if highest_match_id_raw is None:
-                highest_match_id = None
-            else:
-                try:
-                    highest_match_id = int(highest_match_id_raw)
-                except (TypeError, ValueError):
-                    highest_match_id = None
-            if highest_match_id is not None and highest_match_id < 0:
-                highest_match_id = None
-            raw_discovered = data.pop("discovered", [])
-            if isinstance(raw_discovered, list):
-                discovered_payload = raw_discovered
-            else:
-                discovered_payload = []
-            has_discovered_accounts = False
-            if discovered_payload:
-                seen_candidates: set[int] = set()
-                for entry in discovered_payload:
-                    candidate: object | None
-                    if isinstance(entry, dict):
-                        candidate = entry.get("steamAccountId")
-                        if candidate is None:
-                            candidate = entry.get("id")
-                    else:
-                        candidate = entry
-                    try:
-                        candidate_id = int(candidate) if candidate is not None else None
-                    except (TypeError, ValueError):
-                        continue
-                    if candidate_id is None:
-                        continue
-                    if candidate_id <= 0 or candidate_id == steam_account_id:
-                        continue
-                    if candidate_id in seen_candidates:
-                        continue
-                    seen_candidates.add(candidate_id)
-                    has_discovered_accounts = True
-                    break
-            retain_assignment = data.get("retainAssignment") is True
-            assignment_depth = None
-            next_task = None
-            with db_connection(write=True) as conn:
-                cur = conn.cursor()
-                set_clauses = [
-                    "discover_done=TRUE",
-                    "full_write_done=%s",
-                ]
-                set_parameters: list[object] = [not has_discovered_accounts]
-                if not retain_assignment:
-                    set_clauses.extend(["assigned_to=NULL", "assigned_at=NULL"])
-                set_clauses.append(
-                    "highest_match_id = CASE\n"
-                    "                        WHEN CAST(%s AS BIGINT) IS NULL THEN highest_match_id\n"
-                    "                        WHEN highest_match_id IS NULL THEN CAST(%s AS BIGINT)\n"
-                    "                        ELSE GREATEST(highest_match_id, CAST(%s AS BIGINT))\n"
-                    "                    END"
-                )
-                update_query = (
-                    "UPDATE players\n"
-                    "SET "
-                    + ",\n        ".join(set_clauses)
-                    + "\nWHERE steamAccountId=%s\nRETURNING depth"
-                )
-                update_row = retryable_execute(
-                    cur,
-                    update_query,
-                    (
-                        *set_parameters,
-                        highest_match_id,
-                        highest_match_id,
-                        highest_match_id,
-                        steam_account_id,
-                    ),
-                    retry_interval=ASSIGNMENT_RETRY_INTERVAL,
-                ).fetchone()
-                if update_row is None:
-                    return (
-                        jsonify({"status": "error", "message": "Player not found"}),
-                        404,
-                    )
-                assignment_depth = update_row["depth"] if update_row is not None else None
-                if request_new_task:
-                    next_task = assign_next_task(connection=conn)
-            if has_discovered_accounts:
-                submit_discover_submission(
-                    steam_account_id,
-                    discovered_payload,
-                    provided_next_depth,
-                    provided_depth,
-                    assignment_depth,
-                )
-            response_payload = {"status": "ok"}
+
+        # Foreground: mark player scraped, release the lease, fetch next task.
+        next_task = None
+        with db_connection(write=True) as conn:
+            cur = conn.cursor()
+            update_row = retryable_execute(
+                cur,
+                """
+                UPDATE players
+                SET scraped_at = NOW(),
+                    latest_match_id = COALESCE(%s, latest_match_id),
+                    assigned_to = NULL,
+                    assigned_at = NULL
+                WHERE steamAccountId=%s
+                RETURNING depth
+                """,
+                (latest_match_id, steam_account_id),
+                retry_interval=ASSIGNMENT_RETRY_INTERVAL,
+            ).fetchone()
+            if update_row is None:
+                return jsonify({"status": "error", "message": "Player not found"}), 404
+            assignment_depth = int(update_row["depth"])
             if request_new_task:
-                response_payload["task"] = next_task
-            return jsonify(response_payload)
-        return jsonify({"status": "error", "message": "Unknown submit type"}), 400
+                next_task = assign_next_task(connection=conn)
+
+        next_depth = (provided_depth if provided_depth is not None else assignment_depth) + 1
+
+        submit_scrape_submission(
+            steam_account_id,
+            heroes_payload,
+            discovered_ids,
+            latest_match_id,
+            next_depth,
+        )
+
+        response_payload = {"status": "ok"}
+        if request_new_task:
+            response_payload["task"] = next_task
+        return jsonify(response_payload)
 
     @app.get("/progress")
     def progress():

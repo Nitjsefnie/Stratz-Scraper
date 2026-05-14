@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Iterable, List
 
@@ -12,7 +13,6 @@ from ..database import (
     db_connection,
     retryable_execute,
     retryable_executemany,
-    row_value,
 )
 
 BACKGROUND_EXECUTOR = ThreadPoolExecutor(max_workers=1)
@@ -24,14 +24,10 @@ _RETRYABLE_ERRORS = (
     errors.LockNotAvailable,
 )
 
-import time
-
 __all__ = [
     "BACKGROUND_EXECUTOR",
-    "process_discover_submission",
-    "process_hero_submission",
-    "submit_discover_submission",
-    "submit_hero_submission",
+    "process_scrape_submission",
+    "submit_scrape_submission",
 ]
 
 
@@ -45,58 +41,13 @@ def _submit_background(func, /, *args, **kwargs) -> None:
     BACKGROUND_EXECUTOR.submit(_runner)
 
 
-def _unmark_hero_task(steam_account_id: int) -> None:
-    try:
-        with db_connection(write=True) as conn:
-            cur = conn.cursor()
-            retryable_execute(
-                cur,
-                """
-                UPDATE players
-                SET hero_done=FALSE,
-                    hero_refreshed_at=NULL,
-                    assigned_to=NULL,
-                    assigned_at=NULL
-                WHERE steamAccountId=%s
-                """,
-                (steam_account_id,),
-            )
-    except Exception:
-        import traceback
-
-        traceback.print_exc()
-
-
-def _unmark_discover_task(steam_account_id: int) -> None:
-    try:
-        with db_connection(write=True) as conn:
-            cur = conn.cursor()
-            retryable_execute(
-                cur,
-                """
-                UPDATE players
-                SET discover_done=FALSE,
-                    full_write_done=FALSE,
-                    assigned_to=NULL,
-                    assigned_at=NULL
-                WHERE steamAccountId=%s
-                """,
-                (steam_account_id,),
-            )
-    except Exception:
-        import traceback
-
-        traceback.print_exc()
-
-
 def _extract_hero_rows(
     steam_account_id: int, heroes_payload: Iterable[dict] | None
-) -> tuple[List[tuple[int, int, int, int]], List[int]]:
-    hero_stats_rows: List[tuple[int, int, int, int]] = []
-    hero_ids: List[int] = []
+) -> List[tuple[int, int, int, int]]:
+    rows: List[tuple[int, int, int, int]] = []
     seen: set[int] = set()
     if heroes_payload is None:
-        return hero_stats_rows, hero_ids
+        return rows
     for hero in heroes_payload:
         try:
             hero_id = int(hero["heroId"])
@@ -107,100 +58,11 @@ def _extract_hero_rows(
             wins = int(hero.get("wins", 0))
         except (KeyError, TypeError, ValueError):
             continue
-        hero_stats_rows.append((steam_account_id, hero_id, matches, wins))
-        if hero_id not in seen:
-            hero_ids.append(hero_id)
-            seen.add(hero_id)
-    return hero_stats_rows, hero_ids
-
-
-def _iter_consuming_values(values: Iterable[object]) -> Iterator[object]:
-    if isinstance(values, list):
-        while values:
-            yield values.pop()
-        return
-    for value in values:
-        yield value
-
-
-def _iter_discovered_candidate_ids(
-    values: Iterable[object] | None,
-) -> Iterable[int]:
-    if values is None:
-        return
-    for value in values:
-        candidate_id: object | None
-        if isinstance(value, dict):
-            candidate_id = value.get("steamAccountId")
-            if candidate_id is None:
-                candidate_id = value.get("id")
-        else:
-            candidate_id = value
-        try:
-            normalized_id = int(candidate_id)
-        except (TypeError, ValueError):
+        if hero_id in seen:
             continue
-        if normalized_id <= 0:
-            continue
-        yield normalized_id
-
-
-def _resolve_next_depth(
-    provided_next_depth: int | None,
-    provided_depth: int | None,
-    assignment_depth: int | None,
-) -> int:
-    if provided_next_depth is not None:
-        return provided_next_depth
-    parent_depth_value = provided_depth
-    if parent_depth_value is None:
-        if assignment_depth is not None:
-            parent_depth_value = assignment_depth
-        else:
-            parent_depth_value = 0
-    return parent_depth_value + 1
-
-
-def _coerce_optional_int(value: object | None) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, int):
-        return value
-    try:
-        return int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-
-
-def process_hero_submission(
-    steam_account_id: int,
-    heroes_payload: Iterable[dict] | None,
-) -> None:
-    hero_stats_rows, _hero_ids = _extract_hero_rows(steam_account_id, heroes_payload)
-    if not hero_stats_rows:
-        return
-    try:
-        with db_connection(write=True) as conn:
-            cur = conn.cursor()
-            retryable_executemany(
-                cur,
-                """
-                INSERT INTO hero_stats (steamAccountId, heroId, matches, wins)
-                VALUES (%s,%s,%s,%s)
-                ON CONFLICT(steamAccountId, heroId) DO UPDATE SET
-                    matches = excluded.matches,
-                    wins = excluded.wins
-                """,
-                hero_stats_rows,
-            )
-    except Exception:
-        import traceback
-        print(
-            f"[submit-background] failed to process hero stats for {steam_account_id}",
-            flush=True,
-        )
-        traceback.print_exc()
-        _unmark_hero_task(steam_account_id)
+        seen.add(hero_id)
+        rows.append((steam_account_id, hero_id, matches, wins))
+    return rows
 
 
 def _copy_discovered_rows(
@@ -228,15 +90,10 @@ def _copy_discovered_rows(
                         copy.write_row((sid, next_depth))
                 cur.execute(
                     """
-                    INSERT INTO players (
-                        steamAccountId, depth, hero_done, discover_done
-                    )
-                    SELECT steamAccountId, depth, FALSE, FALSE
-                    FROM discovered_tmp
+                    INSERT INTO players (steamAccountId, depth)
+                    SELECT steamAccountId, depth FROM discovered_tmp
                     ON CONFLICT (steamAccountId) DO UPDATE
-                    SET depth = excluded.depth,
-                        highest_match_id = NULL,
-                        discover_done = FALSE
+                    SET depth = excluded.depth
                     WHERE excluded.depth < players.depth
                     """
                 )
@@ -247,7 +104,6 @@ def _copy_discovered_rows(
                 conn.rollback()
             except Exception:
                 pass
-            # Reacquire advisory lock to match prior retry semantic.
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT pg_advisory_xact_lock(%s)",
@@ -256,78 +112,82 @@ def _copy_discovered_rows(
             time.sleep(0.5)
 
 
-def process_discover_submission(
-    steam_account_id: int,
-    discovered_payload: Iterable[object] | None,
-    provided_next_depth: int | None,
-    provided_depth: int | None,
-    assignment_depth: int | None,
-) -> None:
-    parsed_next_depth = _coerce_optional_int(provided_next_depth)
-    parsed_depth = _coerce_optional_int(provided_depth)
-    parsed_assignment_depth = _coerce_optional_int(assignment_depth)
-    next_depth_value = _resolve_next_depth(
-        parsed_next_depth,
-        parsed_depth,
-        parsed_assignment_depth,
-    )
-
-    deduped: list[int] = []
-    seen: set[int] = set()
-    for candidate_id in _iter_discovered_candidate_ids(discovered_payload):
-        if candidate_id == steam_account_id or candidate_id in seen:
-            continue
-        seen.add(candidate_id)
-        deduped.append(candidate_id)
-
+def _unmark_scrape_task(steam_account_id: int) -> None:
+    """Clear a failed scrape's lease so the player is eligible for re-scrape."""
     try:
         with db_connection(write=True) as conn:
-            if deduped:
-                _copy_discovered_rows(conn, deduped, next_depth_value)
-            with conn.cursor() as cur:
-                retryable_execute(
+            cur = conn.cursor()
+            retryable_execute(
+                cur,
+                """
+                UPDATE players
+                SET assigned_to=NULL, assigned_at=NULL, scraped_at=NULL
+                WHERE steamAccountId=%s
+                """,
+                (steam_account_id,),
+            )
+    except Exception:
+        import traceback
+        traceback.print_exc()
+
+
+def process_scrape_submission(
+    steam_account_id: int,
+    heroes_payload: Iterable[dict] | None,
+    discovered_ids: list[int],
+    latest_match_id: int | None,
+    next_depth: int,
+) -> None:
+    hero_rows = _extract_hero_rows(steam_account_id, heroes_payload)
+    try:
+        with db_connection(write=True) as conn:
+            cur = conn.cursor()
+            if hero_rows:
+                retryable_executemany(
                     cur,
                     """
-                    UPDATE players
-                    SET full_write_done=TRUE
-                    WHERE steamAccountId=%s
+                    INSERT INTO hero_stats (steamAccountId, heroId, matches, wins)
+                    VALUES (%s,%s,%s,%s)
+                    ON CONFLICT(steamAccountId, heroId) DO UPDATE SET
+                        matches = excluded.matches,
+                        wins = excluded.wins
                     """,
-                    (steam_account_id,),
+                    hero_rows,
                 )
-
+            if discovered_ids:
+                _copy_discovered_rows(conn, discovered_ids, next_depth)
+            retryable_execute(
+                cur,
+                """
+                UPDATE players
+                SET scraped_at = NOW(),
+                    latest_match_id = COALESCE(%s, latest_match_id)
+                WHERE steamAccountId=%s
+                """,
+                (latest_match_id, steam_account_id),
+            )
     except Exception:
         import traceback
         print(
-            f"[submit-background] failed to process discovery for {steam_account_id}",
+            f"[submit-background] scrape failed for {steam_account_id}",
             flush=True,
         )
         traceback.print_exc()
-        _unmark_discover_task(steam_account_id)
+        _unmark_scrape_task(steam_account_id)
 
 
-def submit_hero_submission(
+def submit_scrape_submission(
     steam_account_id: int,
     heroes_payload: Iterable[dict] | None,
+    discovered_ids: list[int],
+    latest_match_id: int | None,
+    next_depth: int,
 ) -> None:
     _submit_background(
-        process_hero_submission,
+        process_scrape_submission,
         steam_account_id,
         heroes_payload,
-    )
-
-
-def submit_discover_submission(
-    steam_account_id: int,
-    discovered_payload: Iterable[object] | None,
-    provided_next_depth: int | None,
-    provided_depth: int | None,
-    assignment_depth: int | None,
-) -> None:
-    _submit_background(
-        process_discover_submission,
-        steam_account_id,
-        discovered_payload,
-        provided_next_depth,
-        provided_depth,
-        assignment_depth,
+        discovered_ids,
+        latest_match_id,
+        next_depth,
     )
