@@ -29,8 +29,7 @@
   const timeSeries = snapshots
     .map((entry) => ({
       x: new Date(entry.captured_at).getTime(),
-      heroDone: entry.hero_done,
-      discoverDone: entry.discover_done,
+      scraped: entry.scraped,
       playersTotal: entry.players_total,
     }))
     .filter((entry) => Number.isFinite(entry.x))
@@ -40,8 +39,7 @@
     return;
   }
 
-  const heroDone = timeSeries.map((entry) => ({ x: entry.x, y: entry.heroDone }));
-  const discoverDone = timeSeries.map((entry) => ({ x: entry.x, y: entry.discoverDone }));
+  const scraped = timeSeries.map((entry) => ({ x: entry.x, y: entry.scraped }));
   const playersTotal = timeSeries.map((entry) => ({ x: entry.x, y: entry.playersTotal }));
 
   const formatDateTime = (timestamp) => {
@@ -60,17 +58,10 @@
     data: {
       datasets: [
         {
-          label: "Hero Done",
-          data: heroDone,
+          label: "Scraped",
+          data: scraped,
           borderColor: "rgba(75, 192, 192, 1)",
           backgroundColor: "rgba(75, 192, 192, 0.1)",
-          tension: 0.2,
-        },
-        {
-          label: "Discover Done",
-          data: discoverDone,
-          borderColor: "rgba(255, 99, 132, 1)",
-          backgroundColor: "rgba(255, 99, 132, 0.1)",
           tension: 0.2,
         },
         {
