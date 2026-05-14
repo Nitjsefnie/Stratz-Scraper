@@ -497,11 +497,16 @@ def release_incomplete_assignments(
                 UPDATE players
                 SET assigned_to=NULL,
                     assigned_at=NULL
-                WHERE assigned_to IS NOT NULL
-                  AND (
-                      assigned_at IS NULL
-                      OR assigned_at <= NOW() - (%s)::interval
-                  )
+                WHERE steamAccountId IN (
+                    SELECT steamAccountId
+                    FROM players
+                    WHERE assigned_to IS NOT NULL
+                      AND (
+                          assigned_at IS NULL
+                          OR assigned_at <= NOW() - (%s)::interval
+                      )
+                    LIMIT 1000
+                )
                 """,
                 (age_interval,),
             )
