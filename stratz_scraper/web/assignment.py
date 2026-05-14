@@ -357,15 +357,6 @@ def _assign_next_task_on_connection(connection, *, run_cleanup: bool) -> dict | 
         maybe_run_assignment_cleanup(connection)
 
     with connection.cursor() as cur:
-        counter_row = cur.execute(
-            "SELECT value FROM meta WHERE key=%s",
-            ("task_assignment_counter",),
-        ).fetchone()
-        try:
-            current_count = int(counter_row["value"]) if counter_row else 0
-        except (TypeError, ValueError):
-            current_count = 0
-
         candidate_payload = _assign_next_hero(cur)
 
         if candidate_payload is None:
@@ -456,27 +447,9 @@ def _assign_next_task_on_connection(connection, *, run_cleanup: bool) -> dict | 
                 candidate_payload["highestMatchId"] = first["highestMatchId"]
 
         if candidate_payload and candidate_payload is not _DISCOVERY_THROTTLED:
-            _increment_assignment_counter(cur)
             return candidate_payload
 
     return None
 
 
-def _increment_assignment_counter(cur) -> int:
-    row = retryable_execute(
-        cur,
-        """
-        INSERT INTO meta (key, value)
-        VALUES (%s, '1')
-        ON CONFLICT(key) DO UPDATE SET value=CAST(meta.value AS INTEGER) + 1
-        RETURNING CAST(value AS INTEGER) AS value
-        """,
-        ("task_assignment_counter",),
-        retry_interval=ASSIGNMENT_RETRY_INTERVAL,
-    ).fetchone()
-    if not row:
-        return 0
-    try:
-        return int(row["value"])
-    except (TypeError, ValueError):
-        return 0
+
