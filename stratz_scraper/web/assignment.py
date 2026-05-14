@@ -115,21 +115,21 @@ def _discovery_backlog_exceeded(cur) -> bool:
     backlog_row = retryable_execute(
         cur,
         """
-        SELECT COUNT(*) AS backlog
-        FROM players
-        WHERE discover_done=TRUE
-          AND full_write_done=FALSE
-          AND highest_match_id IS NOT NULL
+        SELECT EXISTS (
+            SELECT 1
+            FROM players
+            WHERE discover_done=TRUE
+              AND full_write_done=FALSE
+              AND highest_match_id IS NOT NULL
+            OFFSET 100 LIMIT 1
+        ) AS backlog_exceeded
         """,
         retry_interval=ASSIGNMENT_RETRY_INTERVAL,
     ).fetchone()
 
-    try:
-        backlog_count = int(row_value(backlog_row, "backlog")) if backlog_row else 0
-    except (TypeError, ValueError):
-        backlog_count = 0
-
-    return backlog_count > 100
+    if backlog_row is None:
+        return False
+    return bool(row_value(backlog_row, "backlog_exceeded"))
 
 
 def _assign_discovery(cur) -> dict | _DiscoveryThrottle | None:
