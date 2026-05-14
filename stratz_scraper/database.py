@@ -63,6 +63,46 @@ def row_value(row: Mapping[str, object] | object, key: str) -> object:
     raise KeyError(key)
 
 
+def ensure_database_exists() -> None:
+    """Create the configured PostgreSQL database if it doesn't already exist.
+
+    Connects to the ``postgres`` maintenance database using ``POSTGRES_*``
+    env vars (defaults same as ``_build_database_url``). Idempotent.
+    Honors ``DATABASE_URL`` only insofar as we still build the maintenance
+    URL from ``POSTGRES_*`` — callers using a custom ``DATABASE_URL`` with
+    different creds should pre-create the target DB themselves.
+    """
+
+    target_db = os.environ.get("POSTGRES_DB", "stratz_scraper")
+    user = os.environ.get("POSTGRES_USER", "postgres")
+    password = os.environ.get("POSTGRES_PASSWORD", "postgres")
+    host = os.environ.get("POSTGRES_HOST", "localhost")
+    port = os.environ.get("POSTGRES_PORT", "5432")
+    maintenance_url = (
+        f"postgresql://{user}:{password}@{host}:{port}/postgres"
+    )
+    try:
+        conn = connect(maintenance_url, autocommit=True)
+    except Exception as exc:
+        print(f"ensure_database_exists: cannot reach maintenance db ({exc!r})")
+        return
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM pg_database WHERE datname=%s", (target_db,)
+            )
+            if cur.fetchone() is None:
+                cur.execute(f'CREATE DATABASE "{target_db}"')
+                print(f"ensure_database_exists: created database {target_db!r}")
+    except Exception as exc:
+        print(f"ensure_database_exists: error checking/creating ({exc!r})")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def ensure_schema_exists() -> None:
     global _SCHEMA_INITIALIZED
     if _SCHEMA_INITIALIZED:
@@ -463,6 +503,7 @@ __all__ = [
     "connect_pg",
     "db_connection",
     "close_cached_connections",
+    "ensure_database_exists",
     "ensure_schema_exists",
     "ensure_schema",
     "ensure_indexes",
