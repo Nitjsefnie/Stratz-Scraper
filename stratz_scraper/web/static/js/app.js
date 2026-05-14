@@ -8,7 +8,10 @@ const state = {
   mintLoopPromise: null,
   mintLastOutcome: null,
   mintLastError: null,
+  deleteOn429: false,
 };
+
+const DELETE_ON_429_KEY = "delete_on_429";
 
 const TOKEN_LOG_MAX_ENTRIES = 200;
 const DAY_IN_MS = 86_400_000;
@@ -31,6 +34,7 @@ const elements = {
   best: document.getElementById("best"),
   mintToggle: document.getElementById("mintToggle"),
   mintStatus: document.getElementById("mintStatus"),
+  deleteOn429: document.getElementById("deleteOn429"),
   tokenSummary: document.getElementById("tokenSummary"),
   seedBtn: document.getElementById("seedBtn"),
   seedStart: document.getElementById("seedStart"),
@@ -824,6 +828,7 @@ async function executeStratzQuery(query, variables, token) {
 
   if (!response.ok) {
     const error = new Error(`Stratz API returned ${response.status}`);
+    error.status = response.status;
     if (response.status === 429) {
       const retryAfterHeader = response.headers.get("retry-after");
       const retryAfterMs = parseRetryAfterHeader(retryAfterHeader);
@@ -1914,6 +1919,23 @@ async function workLoopForToken(token) {
       if (hadTask && maybeRemoveExpiredToken(token)) {
         break;
       }
+      if (
+        state.deleteOn429
+        && error
+        && (error.status === 429 || /\b429\b/.test(message))
+      ) {
+        logToken(token, "Hit HTTP 429; auto-deleting token (deleteOn429 enabled).");
+        if (typeof token.lastStartMs === "number") {
+          token.totalRuntimeMs += Math.max(0, getNowMs() - token.lastStartMs);
+          token.lastStartMs = null;
+        }
+        token.stopRequested = true;
+        token.running = false;
+        token.activeToken = null;
+        token.removed = true;
+        removeToken(token.id);
+        break;
+      }
       if (!hadTask) {
         const wait = 60_000;
         token.backoff = wait;
@@ -2174,8 +2196,18 @@ function stopMinting() {
   updateMintStatus();
 }
 
+function loadDeleteOn429() {
+  let stored = null;
+  try { stored = localStorage.getItem(DELETE_ON_429_KEY); } catch {}
+  state.deleteOn429 = stored === "true";
+  if (elements.deleteOn429) {
+    elements.deleteOn429.checked = state.deleteOn429;
+  }
+}
+
 function initialise() {
   loadTokensFromStorage();
+  loadDeleteOn429();
   updateBackoffDisplay();
   updateRequestsRemainingDisplay();
   updateGlobalMetrics();
@@ -2268,6 +2300,18 @@ if (elements.mintToggle) {
     } else {
       startMinting();
     }
+  });
+}
+
+if (elements.deleteOn429) {
+  elements.deleteOn429.addEventListener("change", () => {
+    state.deleteOn429 = Boolean(elements.deleteOn429.checked);
+    try {
+      localStorage.setItem(DELETE_ON_429_KEY, state.deleteOn429 ? "true" : "false");
+    } catch (error) {
+      console.warn("Failed to persist deleteOn429", error);
+    }
+    log(`Auto-delete on 429 ${state.deleteOn429 ? "enabled" : "disabled"}.`);
   });
 }
 
