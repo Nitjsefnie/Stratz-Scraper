@@ -2117,7 +2117,7 @@ async function mintLoop() {
     if (result.ok && !hasTokenValue(result.jwt)) {
       const token = addTokenRow(
         { value: result.jwt, maxRequests: MINT_TOKEN_BUDGET },
-        { skipPersist: false },
+        { skipPersist: false, fromStorage: true },
       );
       state.mintLastOutcome = `Minted token (${state.tokens.length} total)`;
       state.mintLastError = null;
