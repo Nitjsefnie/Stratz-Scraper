@@ -349,6 +349,12 @@ def ensure_schema(*, existing: Connection | None = None) -> None:
                 """,
                 (INITIAL_PLAYER_ID,),
             )
+            cur.execute(
+                """
+                DELETE FROM meta
+                WHERE key IN ('hero_assignment_cursor', 'task_assignment_counter')
+                """
+            )
     finally:
         if close_after:
             existing.commit()

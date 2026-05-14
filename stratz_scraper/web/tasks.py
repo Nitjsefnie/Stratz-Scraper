@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Optional
 
 from ..database import db_connection, retryable_execute
-from .assignment import HERO_ASSIGNMENT_CURSOR_KEY
+
 
 __all__ = ["reset_player_task"]
 
@@ -30,18 +30,7 @@ def _reset_hero_task(cur, steam_account_id: int) -> int:
         """,
         (steam_account_id, ),
     )
-    updated_rows = update_cursor.rowcount if update_cursor.rowcount is not None else 0
-    if updated_rows:
-        retryable_execute(
-            cur,
-            """
-            INSERT INTO meta (key, value)
-            VALUES (%s, '-1')
-            ON CONFLICT(key) DO UPDATE SET value='-1'
-            """,
-            (HERO_ASSIGNMENT_CURSOR_KEY, ),
-        )
-    return updated_rows
+    return update_cursor.rowcount if update_cursor.rowcount is not None else 0
 
 
 def _reset_discover_task(cur, steam_account_id: int) -> int:
