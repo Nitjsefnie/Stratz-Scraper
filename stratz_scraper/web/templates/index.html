@@ -86,24 +86,6 @@
         </div>
       </section>
 
-      {% if show_seed %}
-      <section class="card">
-        <h2>Seed Player IDs</h2>
-        <p>Optionally enqueue a range of player IDs to process.</p>
-        <div class="field-row">
-          <label>
-            <span class="label">Start ID</span>
-            <input id="seedStart" type="number" min="1" placeholder="e.g. 100000">
-          </label>
-          <label>
-            <span class="label">End ID</span>
-            <input id="seedEnd" type="number" min="1" placeholder="e.g. 100200">
-          </label>
-          <button id="seedBtn" type="button" class="secondary">Seed IDs</button>
-        </div>
-      </section>
-      {% endif %}
-
       <section class="card">
         <h2>Activity Log</h2>
         <pre id="log" class="log" aria-live="polite"></pre>

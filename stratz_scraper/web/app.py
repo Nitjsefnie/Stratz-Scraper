@@ -55,7 +55,7 @@ def create_app() -> Flask:
 
     @app.get("/")
     def index() -> str:
-        return render_template("index.html", show_seed=is_local_request())
+        return render_template("index.html")
 
     @app.post("/task")
     def task():
