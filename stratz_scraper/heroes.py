@@ -132,6 +132,7 @@ HEROES_JSON = [
     {"id": 137, "localized_name": "Primal Beast"},
     {"id": 138, "localized_name": "Muerta"},
     {"id": 145, "localized_name": "Kez"},
+    {"id": 155, "localized_name": "Largo"},
 ]
 
 HEROES = {hero["id"]: hero["localized_name"] for hero in HEROES_JSON}
