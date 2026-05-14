@@ -3,11 +3,20 @@ const state = {
   maxBackoff: 86_400_000,
   tokenCounter: 0,
   tokens: [],
+  minting: false,
+  mintStopRequested: false,
+  mintLoopPromise: null,
+  mintLastOutcome: null,
+  mintLastError: null,
 };
 
 const TOKEN_LOG_MAX_ENTRIES = 200;
 const DAY_IN_MS = 86_400_000;
 const NO_TASK_RETRY_DELAY_MS = 100;
+const MINT_URL = "https://api.stratz.com/api/v1/user/token";
+const MINT_TOKEN_BUDGET = 500;
+const MINT_INTERVAL_MS_OK = 3000;
+const MINT_INTERVAL_MS_BACKOFF = 15000;
 
 const elements = {
   tokenList: document.getElementById("tokenList"),
@@ -20,6 +29,8 @@ const elements = {
   stop: document.getElementById("stop"),
   progress: document.getElementById("progress"),
   best: document.getElementById("best"),
+  mintToggle: document.getElementById("mintToggle"),
+  mintStatus: document.getElementById("mintStatus"),
   tokenSummary: document.getElementById("tokenSummary"),
   seedBtn: document.getElementById("seedBtn"),
   seedStart: document.getElementById("seedStart"),
@@ -2043,12 +2054,134 @@ function loadTokensFromStorage() {
   updateButtons();
 }
 
+function updateMintButton() {
+  if (!elements.mintToggle) return;
+  elements.mintToggle.textContent = state.minting
+    ? "Stop minting anonymous tokens"
+    : "Start minting anonymous tokens";
+}
+
+function updateMintStatus() {
+  if (!elements.mintStatus) return;
+  if (!state.minting) {
+    elements.mintStatus.textContent = "Idle";
+    return;
+  }
+  if (state.mintLastError) {
+    elements.mintStatus.textContent = `Error: ${state.mintLastError}`;
+    return;
+  }
+  if (state.mintLastOutcome) {
+    elements.mintStatus.textContent = state.mintLastOutcome;
+    return;
+  }
+  elements.mintStatus.textContent = "Running";
+}
+
+async function mintOne() {
+  let response;
+  try {
+    response = await fetch(MINT_URL, { credentials: "omit" });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    return { ok: false, status: 0, errorMsg: `network: ${msg}` };
+  }
+  let body;
+  try {
+    body = await response.json();
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    return { ok: false, status: response.status, errorMsg: `parse: ${msg}` };
+  }
+  if (response.status === 200 && body && body.token) {
+    return { ok: true, jwt: body.token, status: 200 };
+  }
+  return {
+    ok: false,
+    status: response.status,
+    errorMsg: (body && body.error) || `http ${response.status}`,
+  };
+}
+
+function hasTokenValue(value) {
+  if (typeof value !== "string" || !value) return false;
+  return state.tokens.some((t) => t.value === value);
+}
+
+async function mintLoop() {
+  log("Mint loop started.");
+  while (!state.mintStopRequested) {
+    const result = await mintOne();
+    if (state.mintStopRequested) break;
+
+    if (result.ok && !hasTokenValue(result.jwt)) {
+      const token = addTokenRow(
+        { value: result.jwt, maxRequests: MINT_TOKEN_BUDGET },
+        { skipPersist: false },
+      );
+      state.mintLastOutcome = `Minted token (${state.tokens.length} total)`;
+      state.mintLastError = null;
+      updateMintStatus();
+      // Auto-start the freshly minted worker.
+      startToken(token, { skipDuplicateCheck: true });
+    } else if (result.ok) {
+      state.mintLastOutcome = "Mint returned a duplicate token";
+      state.mintLastError = null;
+      updateMintStatus();
+    } else {
+      state.mintLastError = `${result.status || ""} ${result.errorMsg}`.trim();
+      updateMintStatus();
+    }
+
+    const wait = result.ok ? MINT_INTERVAL_MS_OK : MINT_INTERVAL_MS_BACKOFF;
+    for (let waited = 0; waited < wait; waited += 100) {
+      if (state.mintStopRequested) break;
+      await delay(100);
+    }
+  }
+  state.minting = false;
+  state.mintStopRequested = false;
+  state.mintLoopPromise = null;
+  state.mintLastOutcome = null;
+  updateMintButton();
+  updateMintStatus();
+  log("Mint loop stopped.");
+}
+
+function startMinting() {
+  if (state.minting) return;
+  state.minting = true;
+  state.mintStopRequested = false;
+  state.mintLastOutcome = null;
+  state.mintLastError = null;
+  updateMintButton();
+  updateMintStatus();
+  state.mintLoopPromise = mintLoop().catch((error) => {
+    const msg = error instanceof Error ? error.message : String(error);
+    log(`Mint loop crashed: ${msg}`);
+    state.minting = false;
+    state.mintStopRequested = false;
+    state.mintLoopPromise = null;
+    updateMintButton();
+    updateMintStatus();
+  });
+}
+
+function stopMinting() {
+  if (!state.minting) return;
+  state.mintStopRequested = true;
+  state.mintLastOutcome = "Stopping…";
+  updateMintStatus();
+}
+
 function initialise() {
   loadTokensFromStorage();
   updateBackoffDisplay();
   updateRequestsRemainingDisplay();
   updateGlobalMetrics();
   updateTokenSummary();
+  updateMintButton();
+  updateMintStatus();
   refreshProgress().catch((error) => log(error.message));
   loadBest().catch((error) => log(error.message));
 }
@@ -2127,6 +2260,16 @@ elements.stop.addEventListener("click", () => {
   });
   log("Stop requested for all active tokens.");
 });
+
+if (elements.mintToggle) {
+  elements.mintToggle.addEventListener("click", () => {
+    if (state.minting) {
+      stopMinting();
+    } else {
+      startMinting();
+    }
+  });
+}
 
 elements.progress.addEventListener("click", () => {
   refreshProgress({ force: true }).catch((error) => log(error.message));
