@@ -1,5 +1,7 @@
 *
 !README.md
+!LICENSE
+!CONTRIBUTING.md
 !stratz_scraper/
 !stratz_scraper/**
 !**/*.py
